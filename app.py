@@ -202,6 +202,9 @@ def simulate_pickup_steps(
     delivered = 0
 
     while any(s != "done" for s in agent_state.values()):
+        # Process all agents for this round, then emit one snapshot
+        round_events = []
+
         for aid in agent_ids:
             if agent_state[aid] == "picking":
                 remaining = agent_remaining[aid]
@@ -213,41 +216,35 @@ def simulate_pickup_steps(
                     agent_card_counts[aid] = sum(
                         1 for c in cards if c["picked_up"] and c["picked_up_by"] == aid
                     )
-                    continue
 
-                # Pick nearest card
-                px, py = positions[aid]
-                best_idx = None
-                best_dist = float("inf")
-                best_ri = None
-                for ri, cidx in enumerate(remaining):
-                    c = cards[cidx]
-                    d = math.hypot(c["x"] - px, c["y"] - py)
-                    if d < best_dist:
-                        best_dist = d
-                        best_idx = cidx
-                        best_ri = ri
+                if agent_state[aid] == "picking" and remaining:
+                    # Pick nearest card
+                    px, py = positions[aid]
+                    best_idx = None
+                    best_dist = float("inf")
+                    best_ri = None
+                    for ri, cidx in enumerate(remaining):
+                        c = cards[cidx]
+                        d = math.hypot(c["x"] - px, c["y"] - py)
+                        if d < best_dist:
+                            best_dist = d
+                            best_idx = cidx
+                            best_ri = ri
 
-                if best_idx is not None:
-                    card = cards[best_idx]
-                    card["picked_up"] = True
-                    card["picked_up_by"] = aid
-                    positions[aid] = [card["x"], card["y"]]
-                    remaining.pop(best_ri)
+                    if best_idx is not None:
+                        card = cards[best_idx]
+                        card["picked_up"] = True
+                        card["picked_up_by"] = aid
+                        positions[aid] = [card["x"], card["y"]]
+                        remaining.pop(best_ri)
+                        round_events.append({
+                            "agent": aid,
+                            "card": _card_key(card),
+                            "distance": round(best_dist, 2),
+                            "phase": "pickup",
+                        })
 
-                    picked_count = sum(1 for c in cards if c["picked_up"])
-                    steps.append({
-                        "cards": [dict(c) for c in cards],
-                        "positions": {a: tuple(p) for a, p in positions.items()},
-                        "picked": picked_count,
-                        "agent": aid,
-                        "card": _card_key(card),
-                        "distance": round(best_dist, 2),
-                        "phase": "pickup",
-                        "delivered": delivered,
-                    })
-
-            elif agent_state[aid] == "delivering":
+            if agent_state[aid] == "delivering":
                 delivery_progress[aid] += 1
                 t = delivery_progress[aid]
                 sx, sy = delivery_start_pos[aid]
@@ -262,17 +259,32 @@ def simulate_pickup_steps(
                     delivered += agent_card_counts[aid]
                     agent_state[aid] = "done"
 
-                steps.append({
-                    "cards": [dict(c) for c in cards],
-                    "positions": {a: tuple(p) for a, p in positions.items()},
-                    "picked": sum(1 for c in cards if c["picked_up"]),
+                round_events.append({
                     "agent": aid,
                     "card": f"delivered {agent_card_counts[aid]} cards" if arrived
                             else "traveling to verifier",
                     "distance": round(dist / delivery_steps_per_agent, 2),
                     "phase": "delivery",
-                    "delivered": delivered,
                 })
+
+        # Emit one snapshot per round with all agents' combined positions
+        if round_events:
+            picked_count = sum(1 for c in cards if c["picked_up"])
+            any_delivering = any(agent_state[a] in ("delivering", "done") for a in agent_ids)
+            phase = "delivery" if any_delivering and picked_count == 52 else "pickup"
+            # Use first event for card/agent label
+            primary = round_events[0]
+            steps.append({
+                "cards": [dict(c) for c in cards],
+                "positions": {a: tuple(p) for a, p in positions.items()},
+                "picked": picked_count,
+                "agent": primary["agent"],
+                "card": primary["card"],
+                "distance": sum(e["distance"] for e in round_events),
+                "phase": phase,
+                "delivered": delivered,
+                "round_events": round_events,
+            })
 
     return steps
 
@@ -353,7 +365,7 @@ with tab1:
         speed = st.slider("Animation speed", min_value=1, max_value=20, value=8,
                           help="Cards picked per frame")
 
-        run_btn = st.button("Run Simulation", type="primary", use_container_width=True)
+        run_btn = st.button("Run Simulation", type="primary")
 
     with col_viz:
         viz_placeholder = st.empty()
