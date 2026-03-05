@@ -441,17 +441,18 @@ with tab1:
                         text=f"Delivering: {delivered}/52 cards to verifier"
                     )
 
-                # Accumulate log
+                # Accumulate log — iterate all round_events for each step
                 for j in range(i, min(i + speed, len(steps))):
                     s = steps[j]
-                    if s.get("phase") == "delivery":
-                        event_log_lines.append(
-                            f"`{s['agent']}` — {s['card']}"
-                        )
-                    else:
-                        event_log_lines.append(
-                            f"`{s['agent']}` picked up **{s['card']}** (dist: {s['distance']})"
-                        )
+                    for evt in s.get("round_events", []):
+                        if evt["phase"] == "delivery":
+                            event_log_lines.append(
+                                f"`{evt['agent']}` — {evt['card']}"
+                            )
+                        else:
+                            event_log_lines.append(
+                                f"`{evt['agent']}` picked up **{evt['card']}** (dist: {evt['distance']})"
+                            )
 
                 time.sleep(0.05)
 
@@ -460,14 +461,15 @@ with tab1:
             # Final stats
             agent_stats = {}
             for s in steps:
-                aid = s["agent"]
-                if aid not in agent_stats:
-                    agent_stats[aid] = {"cards": 0, "pickup_dist": 0.0, "delivery_dist": 0.0}
-                if s.get("phase") == "delivery":
-                    agent_stats[aid]["delivery_dist"] += s["distance"]
-                else:
-                    agent_stats[aid]["cards"] += 1
-                    agent_stats[aid]["pickup_dist"] += s["distance"]
+                for evt in s.get("round_events", []):
+                    aid = evt["agent"]
+                    if aid not in agent_stats:
+                        agent_stats[aid] = {"cards": 0, "pickup_dist": 0.0, "delivery_dist": 0.0}
+                    if evt["phase"] == "delivery":
+                        agent_stats[aid]["delivery_dist"] += evt["distance"]
+                    else:
+                        agent_stats[aid]["cards"] += 1
+                        agent_stats[aid]["pickup_dist"] += evt["distance"]
 
             stats_md = "### Results\n\n"
             stats_md += "| Agent | Cards | Pickup Dist | Delivery Dist | Total Dist |\n"
