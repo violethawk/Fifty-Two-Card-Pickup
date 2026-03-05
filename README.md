@@ -7,6 +7,13 @@
 
 The canonical "hello world" for multi-agent LLM systems. Simple enough to understand in 5 minutes, deep enough to teach every concept that matters.
 
+**What you'll learn:**
+- Multi-agent orchestration with shared state (LangGraph)
+- Fan-out/convergence patterns with real cost tradeoffs
+- LLM-as-supervisor and LLM-as-worker architectures
+- Conflict resolution, observability, and governance guardrails
+- Reproducible benchmarking across scatter patterns
+
 52 playing cards are scattered on a 10x10 grid. Agents fan out to pick them up, then converge on a central verifier station to deliver their cards. The project progresses through five phases, each adding one layer of complexity — from pure Python functions to LLM-powered agents with conflict resolution, observability, and a plugin architecture.
 
 Built with [LangGraph](https://github.com/langchain-ai/langgraph) and [Claude](https://www.anthropic.com/claude).
@@ -21,7 +28,7 @@ The pipeline has two core phases: **Fan Out** (agents scatter to pick up cards i
 
 ## Interactive Web App
 
-![Streamlit Simulation](images/streamlit_preview.png)
+![Simulation: Fan Out and Converge phases with agent trails](images/streamlit_preview.png)
 
 The Streamlit app lets you run simulations interactively with animated pickup and delivery, agent trails, a compare mode for side-by-side agent configurations, and a full benchmark suite.
 
@@ -65,35 +72,39 @@ python card_pickup.py
 | 4 | 0.2224 | 0.1977 | 0.2482 | 10/10 ✓ |
 ```
 
-### Benchmark Suite (with Delivery Cost)
-
-```
-|        Pattern | Agents |   Pickup |  Delivery |    Total | Delivery % |
-|----------------|--------|----------|-----------|----------|------------|
-|        uniform |      4 |  0.1454s |   0.0983s |  0.2437s |      40.3% |
-|      clustered |      1 |  0.1483s |   0.0263s |  0.1746s |      15.1% |
-|   two_clusters |      1 |  0.1684s |   0.0317s |  0.2000s |      15.8% |
-|  four_clusters |      2 |  0.1458s |   0.0633s |  0.2090s |      30.3% |
-|       diagonal |      2 |  0.1463s |   0.0107s |  0.1570s |       6.8% |
-|           edge |      2 |  0.1378s |   0.0526s |  0.1903s |      27.6% |
-```
-
-The delivery cost changes optimal configurations — `clustered` favors 1 agent (short delivery from corner), while `uniform` still benefits from 4 agents (delivery from near-center is cheap).
+More agents pick up faster, but diminishing returns appear due to delivery cost — 4 agents is only 11% faster than 2, compared to the 30% jump from 1 to 2.
 
 ### Phase 2 — Supervisor Decision
+
+The Claude Sonnet supervisor analyzes scatter metrics and chooses an agent count. With the delivery mechanic, the supervisor must weigh pickup speed against delivery distance:
 
 ```
 | Trial | Supervisor Choice | Supervisor Time | Best Brute-Force | Match? |
 |-------|-------------------|-----------------|------------------|--------|
-| 1     | 4 agents          | 0.1556s         | 4 agents         | Yes    |
-  Reasoning: Cards are very evenly distributed across all four quadrants
-  (13-14 cards each) with a high balance ratio of 0.857, making 4 agents
-  optimal to minimize travel distances within each quadrant.
+| 1     | 2 agents          | 0.1556s         | 2 agents         | Yes    |
+  Reasoning: Cards are spread across the grid with moderate clustering.
+  Two agents balances pickup parallelism against the delivery cost
+  from each agent's final position to the central verifier.
 ```
 
 ### Phase 4 — Live TUI Dashboard
 
 ![TUI Dashboard](images/dashboard.png)
+
+## Benchmark Patterns
+
+![Benchmark Scatter Patterns](images/patterns_overview.png)
+
+| Pattern | Description | Best | Pickup | Delivery | Total | Why |
+|---------|-------------|------|--------|----------|-------|-----|
+| `uniform` | Golden-ratio spiral | 4 | 0.1454s | 0.0983s | 0.2437s | Cards near center, delivery is cheap |
+| `clustered` | Bottom-left corner | 1 | 0.1483s | 0.0263s | 0.1746s | Short pickup; extra agents waste time on delivery |
+| `two_clusters` | Near (1,1) and (9,9) | 1 | 0.1684s | 0.0317s | 0.2000s | Far corners penalize multi-agent delivery |
+| `four_clusters` | 13 per quadrant corner | 2 | 0.1458s | 0.0633s | 0.2090s | Balances speed vs. delivery from corners |
+| `diagonal` | Along (0,0)-(10,10) | 2 | 0.1463s | 0.0107s | 0.1570s | Cards pass near center, delivery is cheap |
+| `edge` | Grid perimeter | 2 | 0.1378s | 0.0526s | 0.1903s | Perimeter-to-center cost favors fewer agents |
+
+Run with `python card_pickup.py --benchmark`. Generate visualizations with `python visualize.py`.
 
 ## The Five Phases
 
@@ -138,21 +149,6 @@ Benchmark suite with 6 scatter patterns. Plugin architecture for swapping LLM pr
 | Verifier | 1 | Checks 52 unique cards, all picked up and delivered, no duplicates |
 | Supervisor | 2 | LLM analyzes scatter pattern and decides agent count (optional) |
 | LLM Pickup | 3 | LLM-powered agents with planning and conflict resolution |
-
-## Benchmark Patterns
-
-![Benchmark Scatter Patterns](images/patterns_overview.png)
-
-| Pattern | Description | Best Config | Why |
-|---------|-------------|-------------|-----|
-| `uniform` | Golden-ratio spiral across grid | 4 agents | Cards near center, delivery cost is low |
-| `clustered` | All cards in bottom-left corner | 1 agent | Short pickup; extra agents waste time delivering from corner |
-| `two_clusters` | Cards near (1,1) and (9,9) | 1 agent | Delivery from far corners penalizes multiple agents |
-| `four_clusters` | 13 cards per quadrant corner | 2 agents | Balances pickup speed vs. delivery cost from corners |
-| `diagonal` | Cards along (0,0)-(10,10) diagonal | 2 agents | Cards pass near center, delivery is cheap |
-| `edge` | Cards along grid perimeter | 2 agents | Perimeter-to-center delivery cost favors fewer agents |
-
-Run with `python card_pickup.py --benchmark`. Generate visualizations with `python visualize.py`.
 
 ## CLI Reference
 
@@ -211,6 +207,18 @@ requirements.txt        Dependencies: langgraph, anthropic, matplotlib, pytest
 **Add a new strategy:** Implement the `PickupStrategy` interface in `plugins.py` and register it in the `STRATEGIES` dict.
 
 **Add a new benchmark pattern:** Write a function returning `List[Card]` in `benchmarks.py` and add it to the `PATTERNS` dict.
+
+## Contributing
+
+Contributions are welcome! This project is designed as a teaching tool, so clarity matters more than cleverness.
+
+1. Fork the repo and create a feature branch
+2. Make your changes — keep them focused and well-tested
+3. Run `python -m pytest tests/` to verify all 38 tests pass
+4. Run `python card_pickup.py --benchmark` to check nothing regressed
+5. Open a PR with a clear description of what and why
+
+Good first contributions: new scatter patterns, new pickup strategies, documentation improvements, or Streamlit app enhancements.
 
 ## License
 
