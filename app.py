@@ -530,14 +530,15 @@ with tab1:
                     progress_bar.progress(min(frac, 1.0),
                                           text=f"Delivering: {delivered}/52 cards to verifier")
 
-                # Accumulate and display log live
+                # Accumulate and display log live (skip "traveling" noise)
                 for j in range(i, min(i + speed, len(steps))):
                     s = steps[j]
                     for evt in s.get("round_events", []):
                         if evt["phase"] == "delivery":
-                            event_log_lines.append(
-                                f"`{evt['agent']}` — {evt['card']}"
-                            )
+                            if evt["card"].startswith("delivered"):
+                                event_log_lines.append(
+                                    f"`{evt['agent']}` — {evt['card']}"
+                                )
                         else:
                             event_log_lines.append(
                                 f"`{evt['agent']}` picked up **{evt['card']}** (dist: {evt['distance']})"
