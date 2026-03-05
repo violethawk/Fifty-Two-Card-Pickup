@@ -1131,7 +1131,7 @@ def main() -> None:
     # Benchmark mode
     if args.benchmark:
         from benchmarks import run_benchmarks
-        run_benchmarks()
+        run_benchmarks(save_log=args.save_log)
         return
 
     run_phase1 = args.phase == 0 or args.phase == 1

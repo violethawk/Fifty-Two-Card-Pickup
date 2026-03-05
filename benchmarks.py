@@ -30,6 +30,8 @@ from card_pickup import (
     _make_initial_state,
     build_graph,
 )
+from observability import EventLog
+import card_pickup as _cp
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +160,7 @@ def _run_pattern_benchmark(
     pattern_name: str,
     cards: List[Card],
     num_agents: int,
+    save_log: bool = False,
 ) -> Tuple[float, bool]:
     """Run a single benchmark: given cards + agent count, return (elapsed, passed)."""
     graph = build_graph(with_supervisor=False, llm_pickup=False)
@@ -185,13 +188,28 @@ def _run_pattern_benchmark(
     builder.add_edge("verify", END)
     mini_graph = builder.compile()
 
-    final_state = mini_graph.invoke(state)
+    # Wire up event logging if requested
+    elog = None
+    if save_log:
+        elog = EventLog()
+        _cp._active_event_log = elog
+
+    try:
+        final_state = mini_graph.invoke(state)
+    finally:
+        _cp._active_event_log = None
+
     elapsed = _extract_elapsed(final_state)
     passed = final_state.get("result", "").startswith("PASS")
+
+    if elog and save_log:
+        filename = f"event_log_bench_{pattern_name}_{num_agents}ag.json"
+        elog.save(filename)
+
     return elapsed, passed
 
 
-def run_benchmarks() -> None:
+def run_benchmarks(save_log: bool = False) -> None:
     """Run all patterns against all agent configurations and print results."""
     configs = [1, 2, 4]
 
@@ -206,7 +224,7 @@ def run_benchmarks() -> None:
         results: List[Tuple[int, float, bool]] = []
 
         for n in configs:
-            elapsed, passed = _run_pattern_benchmark(name, cards, n)
+            elapsed, passed = _run_pattern_benchmark(name, cards, n, save_log=save_log)
             results.append((n, elapsed, passed))
             if not passed:
                 all_passed = False
