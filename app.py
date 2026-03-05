@@ -47,21 +47,61 @@ SUIT_COLORS = {
     "spades": "#555555",
 }
 
-SUIT_MARKERS = {
-    "hearts": "h",      # hexagon ~ heart shape
-    "diamonds": "D",     # thin diamond
-    "clubs": "p",        # pentagon ~ club
-    "spades": "^",       # triangle ~ spade
-}
-
-SUIT_LABELS = {
-    "hearts": "Hearts",
-    "diamonds": "Diamonds",
-    "clubs": "Clubs",
-    "spades": "Spades",
-}
-
 AGENT_COLORS = ["#3498db", "#e74c3c", "#27ae60", "#9b59b6"]
+
+# ---------------------------------------------------------------------------
+# Custom vector path markers for card suits (no font dependency)
+# ---------------------------------------------------------------------------
+
+import matplotlib.path as mpath
+import numpy as np
+
+
+def _heart_marker():
+    verts = [
+        (0, -0.5), (-0.5, 0.1), (-0.5, 0.6), (-0.25, 0.8),
+        (0, 0.5), (0.25, 0.8), (0.5, 0.6), (0.5, 0.1), (0, -0.5),
+    ]
+    codes = [mpath.Path.MOVETO] + [mpath.Path.CURVE3] * 8
+    return mpath.Path(verts, codes)
+
+
+def _diamond_marker():
+    verts = [(0, 1), (0.45, 0), (0, -1), (-0.45, 0), (0, 1)]
+    codes = [mpath.Path.MOVETO] + [mpath.Path.LINETO] * 3 + [mpath.Path.CLOSEPOLY]
+    return mpath.Path(verts, codes)
+
+
+def _club_marker():
+    t = np.linspace(0, 2 * np.pi, 20)
+    r = 0.25
+    top = list(zip(r * np.cos(t), r * np.sin(t) + 0.35))
+    left = list(zip(r * np.cos(t) - 0.3, r * np.sin(t) - 0.1))
+    right = list(zip(r * np.cos(t) + 0.3, r * np.sin(t) - 0.1))
+    verts = (top + [(0, 0)] + left + [(0, 0)] + right
+             + [(0, 0), (-0.1, -0.7), (0.1, -0.7), (0, 0)])
+    codes = [mpath.Path.MOVETO] + [mpath.Path.LINETO] * (len(verts) - 1)
+    return mpath.Path(verts, codes)
+
+
+def _spade_marker():
+    verts = [
+        (0, 0.9), (-0.5, 0.1), (-0.5, -0.3), (-0.25, -0.5),
+        (0, -0.2), (0.25, -0.5), (0.5, -0.3), (0.5, 0.1), (0, 0.9),
+        (0, 0.9), (-0.15, -0.9), (0.15, -0.9), (0, 0.9),
+    ]
+    codes = ([mpath.Path.MOVETO] + [mpath.Path.CURVE3] * 8
+             + [mpath.Path.MOVETO, mpath.Path.LINETO,
+                mpath.Path.LINETO, mpath.Path.CLOSEPOLY])
+    return mpath.Path(verts, codes)
+
+
+SUIT_MARKERS = {
+    "hearts": _heart_marker(),
+    "diamonds": _diamond_marker(),
+    "clubs": _club_marker(),
+    "spades": _spade_marker(),
+}
 
 # Dark-mode-aware colors — detect Streamlit theme
 def _is_dark_mode() -> bool:
@@ -179,56 +219,39 @@ def plot_grid(
     ax.set_xticks(range(11))
     ax.set_yticks(range(11))
 
-    # Row 1: suit markers with Unicode labels
-    card_handles = [
-        plt.Line2D([0], [0], marker=SUIT_MARKERS[s], color="w",
-                   markerfacecolor=c, markersize=8, label=SUIT_LABELS[s],
-                   markeredgecolor="white", markeredgewidth=0.5)
-        for s, c in SUIT_COLORS.items()
-    ]
-    leg1 = ax.legend(handles=card_handles, loc="upper center", bbox_to_anchor=(0.5, -0.06),
-                     ncol=4, fontsize=7, frameon=False)
-    # Color legend text for dark mode
-    if DARK_MODE:
-        for text in leg1.get_texts():
-            text.set_color("#fafafa")
-
-    # Row 2: verifier + agents (always 5 items for consistent layout)
+    # Legend: verifier + agents only (suit shapes are self-explanatory)
     n = num_agents or (len(agent_positions) if agent_positions else 0)
-    agent_handles = [
+    handles = [
         plt.Line2D([0], [0], marker="*", color="w", markerfacecolor="#f1c40f",
                    markersize=10, label="Verifier", markeredgecolor="#d4ac0d",
                    markeredgewidth=0.5)
     ]
-    for i in range(4):  # always show 4 agent slots
+    for i in range(4):  # always show 4 slots for consistent width
         color = AGENT_COLORS[i % len(AGENT_COLORS)]
         if i < n:
-            agent_handles.append(
+            handles.append(
                 plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=color,
                            markersize=8, label=f"Agent {i}",
                            markeredgecolor="white", markeredgewidth=1)
             )
         else:
-            # Invisible placeholder to keep layout stable
-            agent_handles.append(
+            handles.append(
                 plt.Line2D([0], [0], marker="o", color="w", markerfacecolor="w",
                            markersize=8, label=f"Agent {i}",
                            markeredgecolor="w", markeredgewidth=0, alpha=0)
             )
-    ax.add_artist(leg1)
-    leg2 = ax.legend(handles=agent_handles, loc="upper center", bbox_to_anchor=(0.5, -0.14),
-                     ncol=5, fontsize=7, frameon=False)
-    # Hide placeholder labels
-    for i, text in enumerate(leg2.get_texts()):
+    leg = ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.06),
+                    ncol=5, fontsize=7, frameon=False)
+    for i, text in enumerate(leg.get_texts()):
         if DARK_MODE:
             text.set_color("#fafafa")
         if i > n:  # after verifier + active agents
             text.set_alpha(0)
-    for i, handle in enumerate(leg2.legend_handles):
+    for i, handle in enumerate(leg.legend_handles):
         if i > n:
             handle.set_alpha(0)
 
-    fig.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.22)
+    fig.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.16)
     return fig
 
 
