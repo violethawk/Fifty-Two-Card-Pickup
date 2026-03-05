@@ -135,7 +135,7 @@ def plot_grid(
     ax.set_xticks(range(11))
     ax.set_yticks(range(11))
 
-    # Legend for suits + verifier (placed below the grid)
+    # Legend: suits + verifier + agents (placed below the grid)
     handles = [
         plt.Line2D([0], [0], marker=SUIT_MARKERS[s], color="w",
                    markerfacecolor=c, markersize=8, label=s.capitalize(),
@@ -147,8 +147,18 @@ def plot_grid(
                    markersize=10, label="Verifier", markeredgecolor="#d4ac0d",
                    markeredgewidth=0.5)
     )
+    if agent_positions:
+        for aid in sorted(agent_positions.keys()):
+            idx = int(aid.split("_")[1]) if "_" in aid else 0
+            color = AGENT_COLORS[idx % len(AGENT_COLORS)]
+            handles.append(
+                plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=color,
+                           markersize=8, label=f"Agent {idx}",
+                           markeredgecolor="white", markeredgewidth=1)
+            )
+    ncols = len(handles)
     ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.08),
-              ncol=5, fontsize=7, frameon=False)
+              ncol=min(ncols, 5), fontsize=7, frameon=False)
 
     fig.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.16)
     return fig
