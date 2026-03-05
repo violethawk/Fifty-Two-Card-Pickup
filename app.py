@@ -173,7 +173,9 @@ def simulate_pickup_steps(
 ) -> List[Dict]:
     """Run greedy pickup step-by-step, returning a list of step snapshots.
 
-    Returns pickup steps followed by delivery steps (agents traveling to verifier).
+    Agents start delivering to the verifier as soon as their territory is empty,
+    even while other agents are still picking up. This interleaves pickup and
+    delivery steps naturally.
     """
     from card_pickup import VERIFIER_X, VERIFIER_Y
     cards = [dict(c) for c in cards]  # deep copy
@@ -190,88 +192,87 @@ def simulate_pickup_steps(
     positions = {aid: [0.0, 0.0] for aid in agent_ids}
     agent_remaining = {aid: list(idxs) for aid, idxs in region_cards.items()}
 
-    # Phase 1: Fan out — pick up cards
-    any_remaining = True
-    while any_remaining:
-        any_remaining = False
+    # Track agent states: "picking", "delivering", "done"
+    agent_state = {aid: "picking" for aid in agent_ids}
+    agent_card_counts = {aid: 0 for aid in agent_ids}
+    # Delivery interpolation state
+    delivery_start_pos = {}  # aid -> (x, y) when delivery began
+    delivery_progress = {}   # aid -> current step (0..delivery_steps)
+    delivery_steps_per_agent = 8
+    delivered = 0
+
+    while any(s != "done" for s in agent_state.values()):
         for aid in agent_ids:
-            remaining = agent_remaining[aid]
-            if not remaining:
-                continue
-            any_remaining = True
+            if agent_state[aid] == "picking":
+                remaining = agent_remaining[aid]
+                if not remaining:
+                    # Territory empty — start delivering
+                    agent_state[aid] = "delivering"
+                    delivery_start_pos[aid] = tuple(positions[aid])
+                    delivery_progress[aid] = 0
+                    agent_card_counts[aid] = sum(
+                        1 for c in cards if c["picked_up"] and c["picked_up_by"] == aid
+                    )
+                    continue
 
-            # Find nearest among this agent's remaining cards
-            px, py = positions[aid]
-            best_idx = None
-            best_dist = float("inf")
-            best_ri = None
-            for ri, cidx in enumerate(remaining):
-                c = cards[cidx]
-                d = math.hypot(c["x"] - px, c["y"] - py)
-                if d < best_dist:
-                    best_dist = d
-                    best_idx = cidx
-                    best_ri = ri
+                # Pick nearest card
+                px, py = positions[aid]
+                best_idx = None
+                best_dist = float("inf")
+                best_ri = None
+                for ri, cidx in enumerate(remaining):
+                    c = cards[cidx]
+                    d = math.hypot(c["x"] - px, c["y"] - py)
+                    if d < best_dist:
+                        best_dist = d
+                        best_idx = cidx
+                        best_ri = ri
 
-            if best_idx is not None:
-                card = cards[best_idx]
-                card["picked_up"] = True
-                card["picked_up_by"] = aid
-                positions[aid] = [card["x"], card["y"]]
-                remaining.pop(best_ri)
+                if best_idx is not None:
+                    card = cards[best_idx]
+                    card["picked_up"] = True
+                    card["picked_up_by"] = aid
+                    positions[aid] = [card["x"], card["y"]]
+                    remaining.pop(best_ri)
 
-                picked_count = sum(1 for c in cards if c["picked_up"])
+                    picked_count = sum(1 for c in cards if c["picked_up"])
+                    steps.append({
+                        "cards": [dict(c) for c in cards],
+                        "positions": {a: tuple(p) for a, p in positions.items()},
+                        "picked": picked_count,
+                        "agent": aid,
+                        "card": _card_key(card),
+                        "distance": round(best_dist, 2),
+                        "phase": "pickup",
+                        "delivered": delivered,
+                    })
+
+            elif agent_state[aid] == "delivering":
+                delivery_progress[aid] += 1
+                t = delivery_progress[aid]
+                sx, sy = delivery_start_pos[aid]
+                dist = math.hypot(VERIFIER_X - sx, VERIFIER_Y - sy)
+                frac = min(t / delivery_steps_per_agent, 1.0)
+                ix = sx + (VERIFIER_X - sx) * frac
+                iy = sy + (VERIFIER_Y - sy) * frac
+                positions[aid] = [ix, iy]
+
+                arrived = t >= delivery_steps_per_agent
+                if arrived:
+                    delivered += agent_card_counts[aid]
+                    agent_state[aid] = "done"
+
                 steps.append({
                     "cards": [dict(c) for c in cards],
                     "positions": {a: tuple(p) for a, p in positions.items()},
-                    "picked": picked_count,
+                    "picked": sum(1 for c in cards if c["picked_up"]),
                     "agent": aid,
-                    "card": _card_key(card),
-                    "distance": round(best_dist, 2),
-                    "phase": "pickup",
+                    "card": f"delivered {agent_card_counts[aid]} cards" if arrived
+                            else "traveling to verifier",
+                    "distance": round(dist / delivery_steps_per_agent, 2),
+                    "phase": "delivery",
+                    "delivered": delivered,
                 })
-
-    # Phase 2: Converge — deliver to verifier
-    # Sort agents by distance to verifier (closest first)
-    def _delivery_dist(aid):
-        px, py = positions[aid]
-        return math.hypot(VERIFIER_X - px, VERIFIER_Y - py)
-
-    delivery_order = sorted(agent_ids, key=_delivery_dist)
-    delivered = 0
-    agent_card_counts = {}
-    for c in cards:
-        if c["picked_up"] and c["picked_up_by"]:
-            aid = c["picked_up_by"]
-            agent_card_counts[aid] = agent_card_counts.get(aid, 0) + 1
-
-    # Interpolate agent movement toward verifier
-    delivery_steps_per_agent = 5
-    for aid in delivery_order:
-        start_x, start_y = positions[aid]
-        dist = math.hypot(VERIFIER_X - start_x, VERIFIER_Y - start_y)
-        n_cards = agent_card_counts.get(aid, 0)
-
-        for t in range(1, delivery_steps_per_agent + 1):
-            frac = t / delivery_steps_per_agent
-            ix = start_x + (VERIFIER_X - start_x) * frac
-            iy = start_y + (VERIFIER_Y - start_y) * frac
-            positions[aid] = [ix, iy]
-
-            if t == delivery_steps_per_agent:
-                delivered += n_cards
-
-            steps.append({
-                "cards": [dict(c) for c in cards],
-                "positions": {a: tuple(p) for a, p in positions.items()},
-                "picked": 52,
-                "agent": aid,
-                "card": f"delivering {n_cards} cards" if t == delivery_steps_per_agent
-                        else f"traveling to verifier",
-                "distance": round(dist / delivery_steps_per_agent, 2),
-                "phase": "delivery",
-                "delivered": delivered,
-            })
 
     return steps
 
