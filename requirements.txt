@@ -2,4 +2,5 @@
 langgraph==1.0.10
 anthropic
 matplotlib
+streamlit
 pytest

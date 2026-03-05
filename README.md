@@ -29,6 +29,9 @@ python card_pickup.py --phase 1
 # Benchmarks — all scatter patterns, all configs
 python card_pickup.py --benchmark
 
+# Web app — interactive simulation in the browser
+streamlit run app.py
+
 # Full suite — needs ANTHROPIC_API_KEY
 export ANTHROPIC_API_KEY=your-key-here
 python card_pickup.py
@@ -144,6 +147,7 @@ observability.py        Event logging, governance, metrics, TUI dashboard
 benchmarks.py           Scatter patterns and benchmark runner
 plugins.py              LLM provider and pickup strategy interfaces
 visualize.py            Generate PNG visualizations of scatter patterns
+app.py                  Streamlit web app — interactive simulation in the browser
 tests/                  Unit tests (35 tests, no API key needed)
 images/                 Generated scatter pattern and architecture diagrams
 prompts/                Tier 2 implementation prompts for each phase
@@ -164,6 +168,7 @@ requirements.txt        Dependencies: langgraph, anthropic, matplotlib, pytest
 - **langgraph** — state graph orchestration
 - **anthropic** — Claude API for supervisor and LLM agents
 - **matplotlib** — scatter pattern visualizations
+- **streamlit** — interactive web app
 - **pytest** — unit tests
 - Python 3.11+ stdlib (`curses`, `concurrent.futures`, `argparse`)
 
