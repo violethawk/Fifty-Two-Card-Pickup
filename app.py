@@ -64,7 +64,7 @@ def plot_grid(
     show_regions: int = 0,
 ) -> plt.Figure:
     """Render the 10x10 grid with cards and optional agent positions."""
-    fig, ax = plt.subplots(figsize=(7, 7))
+    fig, ax = plt.subplots(figsize=(5, 5))
 
     # Region shading
     if show_regions == 2:
