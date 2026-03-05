@@ -28,7 +28,7 @@ The pipeline has two core phases: **Fan Out** (agents scatter to pick up cards i
 
 ## Interactive Web App
 
-![Simulation: Fan Out and Converge phases with agent trails](images/streamlit_preview.png)
+![4-agent simulation: Fan Out then Converge](images/simulation.gif)
 
 The Streamlit app lets you run simulations interactively with animated pickup and delivery, agent trails, a compare mode for side-by-side agent configurations, and a full benchmark suite.
 
@@ -76,15 +76,18 @@ More agents pick up faster, but diminishing returns appear due to delivery cost 
 
 ### Phase 2 — Supervisor Decision
 
-The Claude Sonnet supervisor analyzes scatter metrics and chooses an agent count. With the delivery mechanic, the supervisor must weigh pickup speed against delivery distance:
+The Claude Sonnet supervisor analyzes scatter metrics and chooses an agent count:
 
 ```
 | Trial | Supervisor Choice | Supervisor Time | Best Brute-Force | Match? |
 |-------|-------------------|-----------------|------------------|--------|
-| 1     | 2 agents          | 0.1556s         | 2 agents         | Yes    |
-  Reasoning: Cards are spread across the grid with moderate clustering.
-  Two agents balances pickup parallelism against the delivery cost
-  from each agent's final position to the central verifier.
+| 1     | 4 agents          | 0.2349s         | 4 agents         | Yes    |
+  Reasoning: Cards are very evenly distributed across all four quadrants
+  (13, 12, 13, 14) with a high balance ratio of 0.857, and the moderate
+  spatial spread indicates agents will benefit from smaller territories
+  to minimize travel distances.
+
+Supervisor matched optimal: 5/5
 ```
 
 ### Phase 4 — Live TUI Dashboard
@@ -107,6 +110,14 @@ The Claude Sonnet supervisor analyzes scatter metrics and chooses an agent count
 Run with `python card_pickup.py --benchmark`. Generate visualizations with `python visualize.py`.
 
 ## The Five Phases
+
+| Phase | Name | What it adds | API key? |
+|-------|------|-------------|----------|
+| 1 | Deterministic Orchestration | Shared state, greedy pickup, delivery, verifier | No |
+| 2 | LLM Supervisor | Claude Sonnet decides agent count from scatter analysis | Yes |
+| 3 | LLM Pickup Agents | Claude Haiku agents with planning and conflict resolution | Yes |
+| 4 | Observability | Event logging, governance guardrails, TUI dashboard | No |
+| 5 | Extensibility | Benchmark suite, plugin architecture, tutorials | No |
 
 ### Phase 1 — Deterministic Multi-Agent Orchestration
 
