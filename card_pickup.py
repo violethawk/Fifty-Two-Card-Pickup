@@ -685,7 +685,7 @@ def _pickup_region(args: Tuple[int, List[Tuple[int, float, float]], str]) -> Lis
     computing distances happens here so that different regions can run
     concurrently across multiple processes.
     """
-    _region_id, positions, _agent_id = args
+    _, positions, _ = args
     # local copy of unpicked positions; each element is (index, x, y)
     remaining = list(positions)
     current_x, current_y = 0.0, 0.0
@@ -1057,7 +1057,6 @@ def _run_with_observability(
     initial_state: AppState,
     dashboard: bool = False,
     save_log: Optional[str] = None,
-    label: str = "",
 ) -> AppState:
     """Run a graph invocation with event logging, governance, dashboard, and metrics."""
     global _active_event_log, _active_dashboard
@@ -1171,7 +1170,6 @@ def main() -> None:
                     _make_initial_state(num_agents=1),
                     dashboard=args.dashboard,
                     save_log=log_path,
-                    label=f"Trial {i+1}",
                 )
 
                 llm_elapsed = _extract_elapsed(llm_state)
