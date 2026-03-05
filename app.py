@@ -146,23 +146,38 @@ def plot_grid(
     leg1 = ax.legend(handles=card_handles, loc="upper center", bbox_to_anchor=(0.5, -0.06),
                      ncol=4, fontsize=7, frameon=False)
 
-    # Row 2: verifier + agents (always show all agents for consistent layout)
+    # Row 2: verifier + agents (always 5 items for consistent layout)
     n = num_agents or (len(agent_positions) if agent_positions else 0)
     agent_handles = [
         plt.Line2D([0], [0], marker="*", color="w", markerfacecolor="#f1c40f",
                    markersize=10, label="Verifier", markeredgecolor="#d4ac0d",
                    markeredgewidth=0.5)
     ]
-    for i in range(n):
+    for i in range(4):  # always show 4 agent slots
         color = AGENT_COLORS[i % len(AGENT_COLORS)]
-        agent_handles.append(
-            plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=color,
-                       markersize=8, label=f"Agent {i}",
-                       markeredgecolor="white", markeredgewidth=1)
-        )
+        if i < n:
+            agent_handles.append(
+                plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=color,
+                           markersize=8, label=f"Agent {i}",
+                           markeredgecolor="white", markeredgewidth=1)
+            )
+        else:
+            # Invisible placeholder to keep layout stable
+            agent_handles.append(
+                plt.Line2D([0], [0], marker="o", color="w", markerfacecolor="w",
+                           markersize=8, label=f"Agent {i}",
+                           markeredgecolor="w", markeredgewidth=0, alpha=0)
+            )
     ax.add_artist(leg1)
-    ax.legend(handles=agent_handles, loc="upper center", bbox_to_anchor=(0.5, -0.14),
-              ncol=len(agent_handles), fontsize=7, frameon=False)
+    leg2 = ax.legend(handles=agent_handles, loc="upper center", bbox_to_anchor=(0.5, -0.14),
+                     ncol=5, fontsize=7, frameon=False)
+    # Hide placeholder labels
+    for i, text in enumerate(leg2.get_texts()):
+        if i > n:  # after verifier + active agents
+            text.set_alpha(0)
+    for i, handle in enumerate(leg2.legend_handles):
+        if i > n:
+            handle.set_alpha(0)
 
     fig.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.22)
     return fig
