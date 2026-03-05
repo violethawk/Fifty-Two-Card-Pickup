@@ -48,18 +48,17 @@ SUIT_COLORS = {
 }
 
 SUIT_MARKERS = {
-    "hearts": "h",
-    "diamonds": "D",
-    "clubs": "s",
-    "spades": "^",
+    "hearts": "h",      # hexagon ~ heart shape
+    "diamonds": "D",     # thin diamond
+    "clubs": "p",        # pentagon ~ club
+    "spades": "^",       # triangle ~ spade
 }
 
-# Unicode suit symbols for text-based rendering
-SUIT_SYMBOLS = {
-    "hearts": "\u2665",
-    "diamonds": "\u2666",
-    "clubs": "\u2663",
-    "spades": "\u2660",
+SUIT_LABELS = {
+    "hearts": "\u2665 Hearts",
+    "diamonds": "\u2666 Diamonds",
+    "clubs": "\u2663 Clubs",
+    "spades": "\u2660 Spades",
 }
 
 AGENT_COLORS = ["#3498db", "#e74c3c", "#27ae60", "#9b59b6"]
@@ -141,11 +140,15 @@ def plot_grid(
     for c in picked:
         ax.scatter(c["x"], c["y"], c=picked_color, marker="o", s=30, alpha=0.3, zorder=1)
 
-    # Draw unpicked cards (Unicode suit symbols)
-    for c in unpicked:
-        ax.text(c["x"], c["y"], SUIT_SYMBOLS[c["suit"]],
-                color=SUIT_COLORS[c["suit"]], fontsize=11, fontweight="bold",
-                ha="center", va="center", alpha=0.85, zorder=2)
+    # Draw unpicked cards (colored by suit)
+    for suit, color in SUIT_COLORS.items():
+        sc = [c for c in unpicked if c["suit"] == suit]
+        if sc:
+            ax.scatter(
+                [c["x"] for c in sc], [c["y"] for c in sc],
+                c=color, marker=SUIT_MARKERS[suit], s=70, alpha=0.85,
+                edgecolors="white", linewidths=0.5, zorder=2,
+            )
 
     # Agent positions
     if agent_positions:
@@ -176,10 +179,11 @@ def plot_grid(
     ax.set_xticks(range(11))
     ax.set_yticks(range(11))
 
-    # Row 1: suit symbols
+    # Row 1: suit markers with Unicode labels
     card_handles = [
-        plt.Line2D([0], [0], marker="$" + SUIT_SYMBOLS[s] + "$", color=c,
-                   markersize=10, label=s.capitalize(), linestyle="None")
+        plt.Line2D([0], [0], marker=SUIT_MARKERS[s], color="w",
+                   markerfacecolor=c, markersize=8, label=SUIT_LABELS[s],
+                   markeredgecolor="white", markeredgewidth=0.5)
         for s, c in SUIT_COLORS.items()
     ]
     leg1 = ax.legend(handles=card_handles, loc="upper center", bbox_to_anchor=(0.5, -0.06),
@@ -283,10 +287,12 @@ def plot_compare(cards: List[Card], configs: List[int]) -> plt.Figure:
         total_dist = sum(d["total_dist"] for d in agent_stats.values())
 
         if final:
-            for c in final["cards"]:
-                ax.text(c["x"], c["y"], SUIT_SYMBOLS[c["suit"]],
-                        color=SUIT_COLORS[c["suit"]], fontsize=8,
-                        ha="center", va="center", alpha=0.3, zorder=1)
+            for suit, color in SUIT_COLORS.items():
+                sc = [c for c in final["cards"] if c["suit"] == suit]
+                if sc:
+                    ax.scatter([c["x"] for c in sc], [c["y"] for c in sc],
+                               c=color, marker=SUIT_MARKERS[suit], s=40, alpha=0.3,
+                               edgecolors="white", linewidths=0.3, zorder=1)
 
             # Draw trails
             trails = _build_trails(steps)
