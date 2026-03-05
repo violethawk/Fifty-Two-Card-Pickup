@@ -65,7 +65,7 @@ def plot_grid(
     show_verifier: bool = True,
 ) -> plt.Figure:
     """Render the 10x10 grid with cards and optional agent positions."""
-    fig, ax = plt.subplots(figsize=(5, 5))
+    fig, ax = plt.subplots(figsize=(4, 4), dpi=80)
 
     # Region shading
     if show_regions == 2:
@@ -391,7 +391,7 @@ with tab1:
                 display_cards = state["cards"]
 
             fig = plot_grid(display_cards, title="Ready to run", show_regions=num_agents)
-            viz_placeholder.pyplot(fig, use_container_width=False)
+            viz_placeholder.pyplot(fig, width="content")
             plt.close(fig)
 
         # Run simulation
@@ -426,7 +426,7 @@ with tab1:
                     title=title,
                     show_regions=num_agents if phase == "pickup" else 0,
                 )
-                viz_placeholder.pyplot(fig, use_container_width=False)
+                viz_placeholder.pyplot(fig, width="content")
                 plt.close(fig)
 
                 if phase == "pickup":
