@@ -64,6 +64,7 @@ def plot_grid(
     show_regions: int = 0,
     show_verifier: bool = True,
     trails: Dict[str, List[Tuple[float, float]]] | None = None,
+    num_agents: int = 0,
 ) -> plt.Figure:
     """Render the 10x10 grid with cards and optional agent positions."""
     fig, ax = plt.subplots(figsize=(3.5, 3.5), dpi=80)
@@ -145,21 +146,20 @@ def plot_grid(
     leg1 = ax.legend(handles=card_handles, loc="upper center", bbox_to_anchor=(0.5, -0.06),
                      ncol=4, fontsize=7, frameon=False)
 
-    # Row 2: verifier + agents
+    # Row 2: verifier + agents (always show all agents for consistent layout)
+    n = num_agents or (len(agent_positions) if agent_positions else 0)
     agent_handles = [
         plt.Line2D([0], [0], marker="*", color="w", markerfacecolor="#f1c40f",
                    markersize=10, label="Verifier", markeredgecolor="#d4ac0d",
                    markeredgewidth=0.5)
     ]
-    if agent_positions:
-        for aid in sorted(agent_positions.keys()):
-            idx = int(aid.split("_")[1]) if "_" in aid else 0
-            color = AGENT_COLORS[idx % len(AGENT_COLORS)]
-            agent_handles.append(
-                plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=color,
-                           markersize=8, label=f"Agent {idx}",
-                           markeredgecolor="white", markeredgewidth=1)
-            )
+    for i in range(n):
+        color = AGENT_COLORS[i % len(AGENT_COLORS)]
+        agent_handles.append(
+            plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=color,
+                       markersize=8, label=f"Agent {i}",
+                       markeredgecolor="white", markeredgewidth=1)
+        )
     ax.add_artist(leg1)
     ax.legend(handles=agent_handles, loc="upper center", bbox_to_anchor=(0.5, -0.14),
               ncol=len(agent_handles), fontsize=7, frameon=False)
@@ -536,6 +536,7 @@ with tab1:
                     title=title,
                     show_regions=num_agents,
                     trails=trails,
+                    num_agents=num_agents,
                 )
                 viz_placeholder.pyplot(fig, width="content")
                 plt.close(fig)
@@ -602,7 +603,8 @@ with tab1:
         # Show initial grid
         if not run_btn and not replay_btn:
             display_cards = _get_cards()
-            fig = plot_grid(display_cards, title="Ready to run", show_regions=num_agents)
+            fig = plot_grid(display_cards, title="Ready to run", show_regions=num_agents,
+                           num_agents=num_agents)
             viz_placeholder.pyplot(fig, width="content")
             plt.close(fig)
 
