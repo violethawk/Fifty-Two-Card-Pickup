@@ -62,6 +62,7 @@ def plot_grid(
     agent_positions: Dict[str, Tuple[float, float]] | None = None,
     title: str = "Card Grid",
     show_regions: int = 0,
+    show_verifier: bool = True,
 ) -> plt.Figure:
     """Render the 10x10 grid with cards and optional agent positions."""
     fig, ax = plt.subplots(figsize=(5, 5))
@@ -106,6 +107,14 @@ def plot_grid(
                     markeredgewidth=2, zorder=5)
             ax.annotate(aid.split("_")[1], (ax_, ay), ha="center", va="center",
                         fontsize=8, fontweight="bold", color="white", zorder=6)
+
+    # Verifier station
+    if show_verifier:
+        from card_pickup import VERIFIER_X, VERIFIER_Y
+        ax.plot(VERIFIER_X, VERIFIER_Y, "*", color="#f1c40f", markersize=18,
+                markeredgecolor="#d4ac0d", markeredgewidth=1.5, zorder=4)
+        ax.annotate("V", (VERIFIER_X, VERIFIER_Y), ha="center", va="center",
+                    fontsize=7, fontweight="bold", color="#7d6608", zorder=4)
 
     ax.set_xlim(-0.3, 10.3)
     ax.set_ylim(-0.3, 10.3)
@@ -162,7 +171,11 @@ def plot_benchmark_results(results: dict) -> plt.Figure:
 def simulate_pickup_steps(
     cards: List[Card], num_agents: int
 ) -> List[Dict]:
-    """Run greedy pickup step-by-step, returning a list of step snapshots."""
+    """Run greedy pickup step-by-step, returning a list of step snapshots.
+
+    Returns pickup steps followed by delivery steps (agents traveling to verifier).
+    """
+    from card_pickup import VERIFIER_X, VERIFIER_Y
     cards = [dict(c) for c in cards]  # deep copy
     steps = []
 
@@ -177,7 +190,7 @@ def simulate_pickup_steps(
     positions = {aid: [0.0, 0.0] for aid in agent_ids}
     agent_remaining = {aid: list(idxs) for aid, idxs in region_cards.items()}
 
-    # Round-robin: each agent picks one card per step
+    # Phase 1: Fan out — pick up cards
     any_remaining = True
     while any_remaining:
         any_remaining = False
@@ -215,7 +228,50 @@ def simulate_pickup_steps(
                     "agent": aid,
                     "card": _card_key(card),
                     "distance": round(best_dist, 2),
+                    "phase": "pickup",
                 })
+
+    # Phase 2: Converge — deliver to verifier
+    # Sort agents by distance to verifier (closest first)
+    def _delivery_dist(aid):
+        px, py = positions[aid]
+        return math.hypot(VERIFIER_X - px, VERIFIER_Y - py)
+
+    delivery_order = sorted(agent_ids, key=_delivery_dist)
+    delivered = 0
+    agent_card_counts = {}
+    for c in cards:
+        if c["picked_up"] and c["picked_up_by"]:
+            aid = c["picked_up_by"]
+            agent_card_counts[aid] = agent_card_counts.get(aid, 0) + 1
+
+    # Interpolate agent movement toward verifier
+    delivery_steps_per_agent = 5
+    for aid in delivery_order:
+        start_x, start_y = positions[aid]
+        dist = math.hypot(VERIFIER_X - start_x, VERIFIER_Y - start_y)
+        n_cards = agent_card_counts.get(aid, 0)
+
+        for t in range(1, delivery_steps_per_agent + 1):
+            frac = t / delivery_steps_per_agent
+            ix = start_x + (VERIFIER_X - start_x) * frac
+            iy = start_y + (VERIFIER_Y - start_y) * frac
+            positions[aid] = [ix, iy]
+
+            if t == delivery_steps_per_agent:
+                delivered += n_cards
+
+            steps.append({
+                "cards": [dict(c) for c in cards],
+                "positions": {a: tuple(p) for a, p in positions.items()},
+                "picked": 52,
+                "agent": aid,
+                "card": f"delivering {n_cards} cards" if t == delivery_steps_per_agent
+                        else f"traveling to verifier",
+                "distance": round(dist / delivery_steps_per_agent, 2),
+                "phase": "delivery",
+                "delivered": delivered,
+            })
 
     return steps
 
@@ -240,16 +296,20 @@ def run_benchmark_fast() -> dict:
             state["phase"] = "pickup"
 
             from langgraph.graph import END, START, StateGraph
-            from card_pickup import timer_start_node, pickup_node, timer_stop_node
+            from card_pickup import (
+                timer_start_node, pickup_node, delivery_node, timer_stop_node,
+            )
 
             builder = StateGraph(AppState)
             builder.add_node("timer_start", timer_start_node)
             builder.add_node("pickup", pickup_node)
+            builder.add_node("delivery", delivery_node)
             builder.add_node("timer_stop", timer_stop_node)
             builder.add_node("verify", verify_node)
             builder.add_edge(START, "timer_start")
             builder.add_edge("timer_start", "pickup")
-            builder.add_edge("pickup", "timer_stop")
+            builder.add_edge("pickup", "delivery")
+            builder.add_edge("delivery", "timer_stop")
             builder.add_edge("timer_stop", "verify")
             builder.add_edge("verify", END)
             mini = builder.compile()
@@ -339,47 +399,71 @@ with tab1:
 
             for i in range(0, len(steps), speed):
                 step = steps[min(i + speed - 1, len(steps) - 1)]
+                phase = step.get("phase", "pickup")
+
+                if phase == "pickup":
+                    title = f"Fan Out — {step['picked']}/52 cards picked"
+                else:
+                    delivered = step.get("delivered", 0)
+                    title = f"Converge — {delivered}/52 cards delivered to verifier"
+
                 fig = plot_grid(
                     step["cards"],
                     agent_positions=step["positions"],
-                    title=f"Round {i+1} — {step['picked']}/52 cards picked",
-                    show_regions=num_agents,
+                    title=title,
+                    show_regions=num_agents if phase == "pickup" else 0,
                 )
                 viz_placeholder.pyplot(fig, use_container_width=False)
                 plt.close(fig)
 
-                progress_bar.progress(
-                    step["picked"] / 52,
-                    text=f"{step['picked']}/52 cards picked"
-                )
+                if phase == "pickup":
+                    progress_bar.progress(
+                        step["picked"] / 52,
+                        text=f"Picking up: {step['picked']}/52"
+                    )
+                else:
+                    delivered = step.get("delivered", 0)
+                    progress_bar.progress(
+                        max(step["picked"] / 52, 0.01),
+                        text=f"Delivering: {delivered}/52 cards to verifier"
+                    )
 
                 # Accumulate log
                 for j in range(i, min(i + speed, len(steps))):
                     s = steps[j]
-                    event_log_lines.append(
-                        f"`{s['agent']}` picked up **{s['card']}** (dist: {s['distance']})"
-                    )
+                    if s.get("phase") == "delivery":
+                        event_log_lines.append(
+                            f"`{s['agent']}` — {s['card']}"
+                        )
+                    else:
+                        event_log_lines.append(
+                            f"`{s['agent']}` picked up **{s['card']}** (dist: {s['distance']})"
+                        )
 
                 time.sleep(0.05)
 
-            progress_bar.progress(1.0, text="All 52 cards picked up!")
+            progress_bar.progress(1.0, text="All 52 cards delivered and verified!")
 
             # Final stats
-            final_step = steps[-1]
             agent_stats = {}
             for s in steps:
                 aid = s["agent"]
                 if aid not in agent_stats:
-                    agent_stats[aid] = {"cards": 0, "distance": 0.0}
-                agent_stats[aid]["cards"] += 1
-                agent_stats[aid]["distance"] += s["distance"]
+                    agent_stats[aid] = {"cards": 0, "pickup_dist": 0.0, "delivery_dist": 0.0}
+                if s.get("phase") == "delivery":
+                    agent_stats[aid]["delivery_dist"] += s["distance"]
+                else:
+                    agent_stats[aid]["cards"] += 1
+                    agent_stats[aid]["pickup_dist"] += s["distance"]
 
             stats_md = "### Results\n\n"
-            stats_md += "| Agent | Cards | Total Distance |\n"
-            stats_md += "|-------|-------|----------------|\n"
+            stats_md += "| Agent | Cards | Pickup Dist | Delivery Dist | Total Dist |\n"
+            stats_md += "|-------|-------|-------------|---------------|------------|\n"
             for aid in sorted(agent_stats.keys()):
                 d = agent_stats[aid]
-                stats_md += f"| {aid} | {d['cards']} | {d['distance']:.1f} |\n"
+                total = d["pickup_dist"] + d["delivery_dist"]
+                stats_md += (f"| {aid} | {d['cards']} | {d['pickup_dist']:.1f} "
+                             f"| {d['delivery_dist']:.1f} | {total:.1f} |\n")
             stats_placeholder.markdown(stats_md)
 
             # Show last N events

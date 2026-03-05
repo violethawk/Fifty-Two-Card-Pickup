@@ -7,12 +7,16 @@ from card_pickup import (
     Card,
     SUITS,
     RANKS,
+    VERIFIER_X,
+    VERIFIER_Y,
     _card_key,
     _find_card_by_key,
     _greedy_nearest_card,
     _resolve_conflicts,
     _analyze_scatter,
+    _extract_timing,
     scatter_node,
+    delivery_node,
     verify_node,
     _make_initial_state,
     build_graph,
@@ -229,6 +233,35 @@ class TestVerifyNode:
 # End-to-end Phase 1 (deterministic)
 # ---------------------------------------------------------------------------
 
+class TestDelivery:
+    def test_delivery_all_cards_delivered(self):
+        random.seed(42)
+        graph = build_graph(with_supervisor=False, llm_pickup=False)
+        state = _make_initial_state(4)
+        final = graph.invoke(state)
+        assert final["cards_delivered"] == 52
+        assert len(final["deliveries"]) == 4
+
+    def test_delivery_agents_at_verifier(self):
+        random.seed(42)
+        graph = build_graph(with_supervisor=False, llm_pickup=False)
+        state = _make_initial_state(2)
+        final = graph.invoke(state)
+        for aid, pos in final["agent_positions"].items():
+            assert abs(pos[0] - VERIFIER_X) < 0.01
+            assert abs(pos[1] - VERIFIER_Y) < 0.01
+
+    def test_timing_breakdown(self):
+        random.seed(42)
+        graph = build_graph(with_supervisor=False, llm_pickup=False)
+        state = _make_initial_state(2)
+        final = graph.invoke(state)
+        timing = _extract_timing(final)
+        assert timing["pickup_duration"] > 0
+        assert timing["delivery_duration"] > 0
+        assert abs(timing["total_duration"] - (timing["pickup_duration"] + timing["delivery_duration"])) < 0.01
+
+
 class TestEndToEnd:
     def test_phase1_single_agent(self):
         random.seed(42)
@@ -238,6 +271,7 @@ class TestEndToEnd:
         assert final["result"].startswith("PASS")
         assert len(final["cards"]) == 52
         assert all(c["picked_up"] for c in final["cards"])
+        assert final["cards_delivered"] == 52
 
     def test_phase1_four_agents(self):
         random.seed(42)
@@ -245,3 +279,4 @@ class TestEndToEnd:
         state = _make_initial_state(4)
         final = graph.invoke(state)
         assert final["result"].startswith("PASS")
+        assert final["cards_delivered"] == 52

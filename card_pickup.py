@@ -88,6 +88,14 @@ class Card(TypedDict):
     picked_up_by: Optional[str]  # agent identifier that picked up the card
 
 
+class Delivery(TypedDict):
+    """Record of one agent's delivery to the verifier."""
+    agent_id: str
+    cards_delivered: int
+    delivery_time: float
+    travel_distance: float
+
+
 class AppState(TypedDict):
     """Shared state carried through the graph.
 
@@ -96,9 +104,10 @@ class AppState(TypedDict):
     """
 
     cards: List[Card]
-    phase: str               # scatter | pickup | verify | done
+    phase: str               # scatter | pickup | delivery | verify | done
     start_time: Optional[float]
     end_time: Optional[float]
+    pickup_end_time: Optional[float]  # when last card was picked up
     pickup_agents: int       # number of concurrent pickup agents
     supervisor_reasoning: Optional[str]  # natural language explanation from the supervisor
     agent_positions: Optional[Dict[str, List[float]]]  # current (x, y) per agent
@@ -110,6 +119,9 @@ class AppState(TypedDict):
     total_output_tokens: int # cumulative output tokens for cost tracking
     event_log: Optional[List[dict]]  # serialized event records (Phase 4)
     result: Optional[str]    # textual report from the verifier
+    verifier_position: Optional[Dict[str, float]]  # {x, y} grid position
+    cards_delivered: int     # increments as agents deliver
+    deliveries: Optional[List[Dict]]  # per-agent delivery records
 
 
 SUITS = ["hearts", "diamonds", "clubs", "spades"]
@@ -624,7 +636,8 @@ def llm_pickup_node(state: AppState) -> AppState:
             )
 
     state["cards"] = cards
-    state["phase"] = "verify"
+    state["phase"] = "delivery"
+    state["pickup_end_time"] = time.perf_counter()
     state["agent_positions"] = positions
     state["agent_intentions"] = intentions
     state["agent_strategies"] = strategies
@@ -673,17 +686,16 @@ def _determine_region(card: Card, num_agents: int) -> int:
     return 0
 
 
-def _pickup_region(args: Tuple[int, List[Tuple[int, float, float]], str]) -> List[int]:
-    """Internal helper executed in a separate process for one agent's region.
+def _pickup_region(args: Tuple[int, List[Tuple[int, float, float]], str]) -> Tuple[List[int], float, float]:
+    """Internal helper executed in a separate process for one agent’s region.
 
     The function receives a tuple `(region_id, positions, agent_id)` where
     `positions` is a list of `(card_index, x, y)` tuples belonging to this
     agent’s region.  It simulates picking up cards by repeatedly selecting
     the nearest unpicked card to the agent’s current position (starting
-    from the origin) until none remain.  It returns the ordered list of
-    card indices to update in the main process.  The heavy work of
-    computing distances happens here so that different regions can run
-    concurrently across multiple processes.
+    from the origin) until none remain.  It returns a tuple of
+    (pickup_order, final_x, final_y) — the ordered list of card indices
+    and the agent’s final position after picking up all its cards.
     """
     _, positions, _ = args
     # local copy of unpicked positions; each element is (index, x, y)
@@ -710,7 +722,7 @@ def _pickup_region(args: Tuple[int, List[Tuple[int, float, float]], str]) -> Lis
         current_x, current_y = nearest_pos[1], nearest_pos[2]
         # remove from remaining
         remaining.pop(nearest_idx)
-    return pickup_order
+    return pickup_order, current_x, current_y
 
 
 def pickup_node(state: AppState) -> AppState:
@@ -749,7 +761,7 @@ def pickup_node(state: AppState) -> AppState:
     # Use a ProcessPoolExecutor only if multiple agents are requested; using
     # processes circumvents Python’s GIL for CPU‑bound work.  For a single
     # agent we run the pickup synchronously in the main process.
-    pickup_results: List[Tuple[int, List[int]]] = []  # (region_id, order list)
+    pickup_results: List[Tuple[int, List[int], float, float]] = []
     if num_agents > 1 and any(region_positions):
         with ProcessPoolExecutor(max_workers=num_agents) as executor:
             future_to_region = {
@@ -757,17 +769,19 @@ def pickup_node(state: AppState) -> AppState:
             }
             for future in as_completed(future_to_region):
                 region_id = future_to_region[future]
-                order = future.result()
-                pickup_results.append((region_id, order))
+                order, final_x, final_y = future.result()
+                pickup_results.append((region_id, order, final_x, final_y))
     else:
         # Synchronous execution for one agent or no cards
         for region_id, positions, agent_id in tasks:
-            order = _pickup_region((region_id, positions, agent_id))
-            pickup_results.append((region_id, order))
+            order, final_x, final_y = _pickup_region((region_id, positions, agent_id))
+            pickup_results.append((region_id, order, final_x, final_y))
 
     # Mark picked cards in the main state; preserve the pick ordering per agent
-    for region_id, order in pickup_results:
+    agent_final_positions: Dict[str, List[float]] = {}
+    for region_id, order, final_x, final_y in pickup_results:
         agent_id = f"agent_{region_id}"
+        agent_final_positions[agent_id] = [final_x, final_y]
         prev_x, prev_y = 0.0, 0.0
         for card_idx in order:
             card = cards[card_idx]
@@ -783,12 +797,100 @@ def pickup_node(state: AppState) -> AppState:
             prev_x, prev_y = card["x"], card["y"]
 
     state["cards"] = cards
+    state["phase"] = "delivery"
+    state["pickup_end_time"] = time.perf_counter()
+    state["agent_positions"] = agent_final_positions
+    return state
+
+
+def delivery_node(state: AppState) -> AppState:
+    """Agents travel to the verifier position and deliver their collected cards.
+
+    Each agent calculates distance from its final pickup position to the
+    verifier, simulates travel, then delivers. The verifier counts cards
+    incrementally as each agent arrives.
+    """
+    cards = state["cards"]
+    vpos = state.get("verifier_position") or {"x": VERIFIER_X, "y": VERIFIER_Y}
+    vx, vy = vpos["x"], vpos["y"]
+    agent_positions = state.get("agent_positions") or {}
+    num_agents = max(1, int(state.get("pickup_agents", 1)))
+    agent_ids = [f"agent_{i}" for i in range(num_agents)]
+
+    elog = _active_event_log
+    dash = _active_dashboard
+
+    # Count cards per agent
+    agent_card_counts: Dict[str, int] = {}
+    for c in cards:
+        if c["picked_up"] and c["picked_up_by"]:
+            aid = c["picked_up_by"]
+            agent_card_counts[aid] = agent_card_counts.get(aid, 0) + 1
+
+    deliveries: List[Dict] = []
+    cards_delivered = 0
+
+    # Sort agents by distance to verifier (closest arrives first)
+    def delivery_distance(aid: str) -> float:
+        pos = agent_positions.get(aid, [0.0, 0.0])
+        return math.hypot(vx - pos[0], vy - pos[1])
+
+    sorted_agents = sorted(agent_ids, key=delivery_distance)
+
+    for aid in sorted_agents:
+        pos = agent_positions.get(aid, [0.0, 0.0])
+        dist = math.hypot(vx - pos[0], vy - pos[1])
+        n_cards = agent_card_counts.get(aid, 0)
+
+        if elog:
+            elog.emit("delivery_depart", agent_id=aid, data={
+                "cards_carrying": n_cards,
+                "distance_to_verifier": round(dist, 2),
+                "from_position": [round(pos[0], 2), round(pos[1], 2)],
+            })
+
+        # Simulate travel
+        time.sleep(dist * TRAVEL_COST_PER_UNIT)
+
+        # Deliver
+        cards_delivered += n_cards
+        delivery_time = dist * TRAVEL_COST_PER_UNIT
+        deliveries.append({
+            "agent_id": aid,
+            "cards_delivered": n_cards,
+            "delivery_time": round(delivery_time, 4),
+            "travel_distance": round(dist, 2),
+        })
+
+        # Update agent position to verifier
+        agent_positions[aid] = [vx, vy]
+
+        if elog:
+            elog.emit("delivery_arrive", agent_id=aid, data={
+                "cards_delivered": n_cards,
+                "total_received": cards_delivered,
+                "travel_distance": round(dist, 2),
+            })
+
+        if dash:
+            picked_count = sum(1 for c in cards if c["picked_up"])
+            dash.update(
+                cards, agent_positions, picked_count, 52,
+                elog.events[-10:] if elog else [],
+                {"elapsed": time.perf_counter() - (state.get("start_time") or 0),
+                 "delivered": cards_delivered,
+                 "phase": "delivery"},
+            )
+
+    state["agent_positions"] = agent_positions
+    state["cards_delivered"] = cards_delivered
+    state["deliveries"] = deliveries
     state["phase"] = "verify"
     return state
 
 
 def timer_stop_node(state: AppState) -> AppState:
-    """Record the end time of the pickup phase."""
+    """Record the end time (after delivery is complete)."""
     state["end_time"] = time.perf_counter()
     return state
 
@@ -798,8 +900,9 @@ def verify_node(state: AppState) -> AppState:
 
     The verifier checks that there are exactly 52 cards, all of which are
     marked as picked up, and that every suit–rank combination appears
-    exactly once.  Any discrepancy results in a FAIL message with
-    details; otherwise a PASS message is stored in the `result` field.
+    exactly once.  It also verifies that cards_delivered matches the total
+    picked up.  Any discrepancy results in a FAIL message with details;
+    otherwise a PASS message is stored in the `result` field.
     """
     cards = state["cards"]
     result_lines = []
@@ -815,6 +918,11 @@ def verify_node(state: AppState) -> AppState:
         seen.add(key)
         if not card["picked_up"]:
             result_lines.append(f"Card not picked up: {card['rank']} of {card['suit']}.")
+    # Check delivery count matches
+    delivered = state.get("cards_delivered", 0)
+    picked = sum(1 for c in cards if c["picked_up"])
+    if delivered > 0 and delivered != picked:
+        result_lines.append(f"Delivery mismatch: {delivered} delivered vs {picked} picked.")
     # Compose result message
     if result_lines:
         state["result"] = "FAIL: " + "; ".join(result_lines)
@@ -822,7 +930,12 @@ def verify_node(state: AppState) -> AppState:
         state["result"] = "PASS"
     state["phase"] = "done"
     if _active_event_log is not None:
-        _active_event_log.emit("verify", data={"result": state["result"]})
+        deliveries = state.get("deliveries") or []
+        _active_event_log.emit("verify", data={
+            "result": state["result"],
+            "cards_delivered": delivered,
+            "deliveries": deliveries,
+        })
         state["event_log"] = _active_event_log.serialize()
     return state
 
@@ -842,6 +955,7 @@ def build_graph(with_supervisor: bool = False, llm_pickup: bool = False) -> Stat
         builder.add_node("supervisor", supervisor_node)
     builder.add_node("timer_start", timer_start_node)
     builder.add_node("pickup", llm_pickup_node if llm_pickup else pickup_node)
+    builder.add_node("delivery", delivery_node)
     builder.add_node("timer_stop", timer_stop_node)
     builder.add_node("verify", verify_node)
     # define edges
@@ -852,11 +966,15 @@ def build_graph(with_supervisor: bool = False, llm_pickup: bool = False) -> Stat
     else:
         builder.add_edge("scatter", "timer_start")
     builder.add_edge("timer_start", "pickup")
-    builder.add_edge("pickup", "timer_stop")
+    builder.add_edge("pickup", "delivery")
+    builder.add_edge("delivery", "timer_stop")
     builder.add_edge("timer_stop", "verify")
     builder.add_edge("verify", END)
     # compile into a runnable graph
     return builder.compile()
+
+
+VERIFIER_X, VERIFIER_Y = 5.0, 5.0
 
 
 def _make_initial_state(num_agents: int = 1) -> AppState:
@@ -866,6 +984,7 @@ def _make_initial_state(num_agents: int = 1) -> AppState:
         "phase": "scatter",
         "start_time": None,
         "end_time": None,
+        "pickup_end_time": None,
         "pickup_agents": num_agents,
         "supervisor_reasoning": None,
         "agent_positions": None,
@@ -877,16 +996,34 @@ def _make_initial_state(num_agents: int = 1) -> AppState:
         "total_output_tokens": 0,
         "event_log": None,
         "result": None,
+        "verifier_position": {"x": VERIFIER_X, "y": VERIFIER_Y},
+        "cards_delivered": 0,
+        "deliveries": [],
     }
 
 
 def _extract_elapsed(final_state: AppState) -> float:
-    """Compute elapsed pickup time from a completed state."""
+    """Compute total elapsed time (pickup + delivery) from a completed state."""
     start = final_state["start_time"]
     end = final_state["end_time"]
     if start is not None and end is not None:
         return end - start
     return float("nan")
+
+
+def _extract_timing(final_state: AppState) -> Dict[str, float]:
+    """Extract detailed timing breakdown from a completed state."""
+    start = final_state.get("start_time") or 0
+    pickup_end = final_state.get("pickup_end_time") or start
+    end = final_state.get("end_time") or pickup_end
+    pickup_dur = pickup_end - start
+    delivery_dur = end - pickup_end
+    total_dur = end - start
+    return {
+        "pickup_duration": pickup_dur,
+        "delivery_duration": delivery_dur,
+        "total_duration": total_dur,
+    }
 
 
 def run_trials(num_agents: int, trials: int = 10) -> Tuple[List[float], int]:

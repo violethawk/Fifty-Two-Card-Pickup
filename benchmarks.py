@@ -27,6 +27,7 @@ from card_pickup import (
     TRAVEL_COST_PER_UNIT,
     _card_key,
     _extract_elapsed,
+    _extract_timing,
     _make_initial_state,
     build_graph,
 )
@@ -161,7 +162,7 @@ def _run_pattern_benchmark(
     cards: List[Card],
     num_agents: int,
     save_log: bool = False,
-) -> Tuple[float, bool]:
+) -> Tuple[float, float, float, bool]:
     """Run a single benchmark: given cards + agent count, return (elapsed, passed)."""
     graph = build_graph(with_supervisor=False, llm_pickup=False)
 
@@ -174,16 +175,20 @@ def _run_pattern_benchmark(
     # Since we can't skip nodes in the compiled graph, we build a
     # mini graph without scatter.
     from langgraph.graph import END, START, StateGraph
-    from card_pickup import timer_start_node, pickup_node, timer_stop_node, verify_node
+    from card_pickup import (
+        timer_start_node, pickup_node, delivery_node, timer_stop_node, verify_node,
+    )
 
     builder = StateGraph(AppState)
     builder.add_node("timer_start", timer_start_node)
     builder.add_node("pickup", pickup_node)
+    builder.add_node("delivery", delivery_node)
     builder.add_node("timer_stop", timer_stop_node)
     builder.add_node("verify", verify_node)
     builder.add_edge(START, "timer_start")
     builder.add_edge("timer_start", "pickup")
-    builder.add_edge("pickup", "timer_stop")
+    builder.add_edge("pickup", "delivery")
+    builder.add_edge("delivery", "timer_stop")
     builder.add_edge("timer_stop", "verify")
     builder.add_edge("verify", END)
     mini_graph = builder.compile()
@@ -200,13 +205,14 @@ def _run_pattern_benchmark(
         _cp._active_event_log = None
 
     elapsed = _extract_elapsed(final_state)
+    timing = _extract_timing(final_state)
     passed = final_state.get("result", "").startswith("PASS")
 
     if elog and save_log:
         filename = f"event_log_bench_{pattern_name}_{num_agents}ag.json"
         elog.save(filename)
 
-    return elapsed, passed
+    return elapsed, timing["pickup_duration"], timing["delivery_duration"], passed
 
 
 def run_benchmarks(save_log: bool = False) -> None:
@@ -214,29 +220,44 @@ def run_benchmarks(save_log: bool = False) -> None:
     configs = [1, 2, 4]
 
     print("=== Benchmark Suite ===\n")
-    header = ["Pattern"] + [f"{n} Agent{'s' if n > 1 else ''}" for n in configs] + ["Best"]
+    header = ["Pattern", "Agents", "Pickup", "Delivery", "Total", "Delivery %"]
     print("| " + " | ".join(f"{h:>14}" for h in header) + " |")
     print("|" + "----------------|" * len(header))
 
     all_passed = True
+    all_results: Dict[str, List] = {}
+
     for name, pattern_fn in PATTERNS.items():
         cards = pattern_fn()
-        results: List[Tuple[int, float, bool]] = []
+        pattern_results = []
 
         for n in configs:
-            elapsed, passed = _run_pattern_benchmark(name, cards, n, save_log=save_log)
-            results.append((n, elapsed, passed))
+            elapsed, pickup_t, delivery_t, passed = _run_pattern_benchmark(
+                name, cards, n, save_log=save_log,
+            )
+            pattern_results.append((n, elapsed, pickup_t, delivery_t, passed))
             if not passed:
                 all_passed = False
 
-        best = min(results, key=lambda r: r[1])
-        row = f"| {name:>14}"
-        for n, elapsed, passed in results:
+        all_results[name] = pattern_results
+        best = min(pattern_results, key=lambda r: r[1])
+
+        for n, elapsed, pickup_t, delivery_t, passed in pattern_results:
             marker = " *" if n == best[0] else "  "
             status = "" if passed else " FAIL"
-            row += f" | {elapsed:>10.4f}s{marker}{status}"
-        row += f" | {best[0]:>10} agent{'s' if best[0] > 1 else ''} |"
-        print(row)
+            del_pct = (delivery_t / elapsed * 100) if elapsed > 0 else 0
+            print(
+                f"| {name:>14} | {n:>14} | {pickup_t:>10.4f}s  "
+                f"| {delivery_t:>10.4f}s  | {elapsed:>10.4f}s{marker}{status}"
+                f" | {del_pct:>10.1f}%  |"
+            )
+
+    print()
+    # Summary: best config per pattern
+    print("Best configs:")
+    for name, results in all_results.items():
+        best = min(results, key=lambda r: r[1])
+        print(f"  {name}: {best[0]} agent{'s' if best[0] > 1 else ''} ({best[1]:.4f}s)")
 
     print()
     if all_passed:

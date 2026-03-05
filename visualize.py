@@ -40,6 +40,10 @@ def render_pattern(name: str, cards: list, ax: plt.Axes) -> None:
                    s=60, alpha=0.85, edgecolors="white", linewidths=0.5,
                    label=suit.capitalize(), zorder=3)
 
+    # Verifier station at center
+    ax.plot(5.0, 5.0, "*", color="#f1c40f", markersize=16,
+            markeredgecolor="#d4ac0d", markeredgewidth=1.5, zorder=4)
+
     ax.set_xlim(-0.5, 10.5)
     ax.set_ylim(-0.5, 10.5)
     ax.set_aspect("equal")
