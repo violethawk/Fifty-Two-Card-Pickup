@@ -33,7 +33,7 @@ This is the fundamental multi-agent problem: **divide work, coordinate agents, v
 
 ## The Agents
 
-Open `card_pickup.py`. The simulation has four agents, each a Python function:
+Open `card_pickup/_core.py`. The simulation has four agents, each a Python function:
 
 ### 1. Scatter Agent (`scatter_node`, line ~108)
 
@@ -96,7 +96,7 @@ Each arrow is an edge. LangGraph executes nodes in this order, passing the state
 ## Running It
 
 ```bash
-python card_pickup.py --phase 1
+python -m card_pickup --phase 1
 ```
 
 You'll see output like:

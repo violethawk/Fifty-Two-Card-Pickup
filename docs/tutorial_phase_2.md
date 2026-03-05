@@ -61,7 +61,7 @@ If the API call fails, the supervisor defaults to 2 agents. Always have a fallba
 
 ```bash
 export ANTHROPIC_API_KEY=your-key-here
-python card_pickup.py --phase 2
+python -m card_pickup --phase 2
 ```
 
 The comparison shows the supervisor's choice against brute-force:
@@ -84,7 +84,7 @@ Contrast this with having the LLM pick up each card individually (Phase 3) — t
 
 ## Exercises
 
-1. **Test with benchmarks**: Run `python card_pickup.py --benchmark` and check if the supervisor would make the right call for each pattern
+1. **Test with benchmarks**: Run `python -m card_pickup --benchmark` and check if the supervisor would make the right call for each pattern
 2. **Modify the prompt**: Add a guideline for when 2 agents is optimal. Does the supervisor start picking 2?
 3. **Change the model**: Try using Haiku instead of Sonnet for the supervisor. Is the reasoning quality noticeably different?
 4. **Add a metric**: Compute a new spatial metric (e.g., average distance from center) and add it to the analysis. Does the supervisor use it?

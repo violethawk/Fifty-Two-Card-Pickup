@@ -63,7 +63,7 @@ The choice of model is a design decision. Pickup agents don't need deep reasonin
 
 ```bash
 export ANTHROPIC_API_KEY=your-key-here
-python card_pickup.py --phase 3
+python -m card_pickup --phase 3
 ```
 
 Output includes per-agent strategies and conflict counts:

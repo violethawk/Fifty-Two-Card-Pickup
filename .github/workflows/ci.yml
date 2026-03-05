@@ -30,7 +30,7 @@ jobs:
         run: python -m pytest tests/ -v
 
       - name: Run Phase 1 simulation
-        run: python card_pickup.py --phase 1
+        run: python -m card_pickup --phase 1
 
       - name: Run benchmark suite
-        run: python card_pickup.py --benchmark
+        run: python -m card_pickup --benchmark

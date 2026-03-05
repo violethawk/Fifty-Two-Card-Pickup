@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "card-pickup"
+version = "1.0.0"
+description = "Multi-agent 52 Card Pickup simulation built with LangGraph and Claude"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=1.0.10",
+    "anthropic",
+    "matplotlib",
+    "streamlit",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+card-pickup = "card_pickup._core:main"

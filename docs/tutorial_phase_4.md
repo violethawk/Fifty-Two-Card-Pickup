@@ -99,13 +99,13 @@ Enable it with `--dashboard`. The grid shows `.` for empty cells, `C` for cards,
 
 ```bash
 # Phase 3 with observability, save event log
-python card_pickup.py --phase 3 --save-log
+python -m card_pickup --phase 3 --save-log
 
 # Replay saved event log through dashboard
-python card_pickup.py --replay event_log_trial_1.json
+python -m card_pickup --replay event_log_trial_1.json
 
 # Live dashboard during run
-python card_pickup.py --phase 3 --dashboard
+python -m card_pickup --phase 3 --dashboard
 ```
 
 ## Event Log Save/Replay
@@ -124,7 +124,7 @@ Production multi-agent systems need both. You monitor to learn and improve. You 
 
 ## The Architecture
 
-All observability code lives in `observability.py`, separate from agent logic in `card_pickup.py`. This separation is deliberate:
+All observability code lives in `observability.py`, separate from agent logic in `card_pickup/_core.py`. This separation is deliberate:
 
 - Agents don't depend on observability
 - Observability can be turned on/off without changing agents

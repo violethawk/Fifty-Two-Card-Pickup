@@ -48,14 +48,14 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 # Phase 1 — no API key needed
-python card_pickup.py --phase 1
+python -m card_pickup --phase 1
 
 # Benchmarks — all scatter patterns, all configs
-python card_pickup.py --benchmark
+python -m card_pickup --benchmark
 
 # Full suite — needs ANTHROPIC_API_KEY
 export ANTHROPIC_API_KEY=your-key-here
-python card_pickup.py
+python -m card_pickup
 ```
 
 ## Sample Output
@@ -107,7 +107,7 @@ Supervisor matched optimal: 5/5
 | `diagonal` | Along (0,0)-(10,10) | 2 | 0.1463s | 0.0107s | 0.1570s | Cards pass near center, delivery is cheap |
 | `edge` | Grid perimeter | 2 | 0.1378s | 0.0526s | 0.1903s | Perimeter-to-center cost favors fewer agents |
 
-Run with `python card_pickup.py --benchmark`. Generate visualizations with `python visualize.py`.
+Run with `python -m card_pickup --benchmark`. Generate visualizations with `python visualize.py`.
 
 ## The Five Phases
 
@@ -164,7 +164,7 @@ Benchmark suite with 6 scatter patterns. Plugin architecture for swapping LLM pr
 ## CLI Reference
 
 ```
-python card_pickup.py [options]
+python -m card_pickup [options]
 
 Options:
   --phase {1,2,3}        Run only the specified phase (default: all)
@@ -179,7 +179,10 @@ Options:
 ## Project Structure
 
 ```
-card_pickup.py          Core simulation: agents, state, LangGraph pipeline
+card_pickup/            Core Python package
+  __init__.py           Public API re-exports
+  __main__.py           Entry point for python -m card_pickup
+  _core.py              Agents, state, LangGraph pipeline
 observability.py        Event logging, governance, metrics, TUI dashboard
 benchmarks.py           Scatter patterns and benchmark runner
 plugins.py              LLM provider and pickup strategy interfaces
@@ -189,6 +192,7 @@ tests/                  Unit tests (38 tests, no API key needed)
 images/                 Generated scatter pattern and architecture diagrams
 prompts/                Tier 2 implementation prompts for each phase
 docs/
+  roadmap.md            Product roadmap (Phases 0-5)
   tutorial_phase_1.md   Tutorial: deterministic agents
   tutorial_phase_2.md   Tutorial: LLM supervisor
   tutorial_phase_3.md   Tutorial: LLM pickup agents
@@ -196,8 +200,8 @@ docs/
   tutorial_phase_5.md   Tutorial: extensibility and plugins
   add_your_own_agent.md Step-by-step guide to adding a new agent
   blog_post.md          "52 Card Pickup: The Multi-Agent Hello World"
-52_Card_Pickup_Roadmap.md  Product roadmap (Phases 0-5)
-requirements.txt        Dependencies: langgraph, anthropic, matplotlib, pytest
+pyproject.toml          Project metadata and dependencies
+requirements.txt        Pinned dependencies for pip install
 ```
 
 ## Dependencies
@@ -226,7 +230,7 @@ Contributions are welcome! This project is designed as a teaching tool, so clari
 1. Fork the repo and create a feature branch
 2. Make your changes — keep them focused and well-tested
 3. Run `python -m pytest tests/` to verify all 38 tests pass
-4. Run `python card_pickup.py --benchmark` to check nothing regressed
+4. Run `python -m card_pickup --benchmark` to check nothing regressed
 5. Open a PR with a clear description of what and why
 
 Good first contributions: new scatter patterns, new pickup strategies, documentation improvements, or Streamlit app enhancements.

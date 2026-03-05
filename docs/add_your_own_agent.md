@@ -5,7 +5,7 @@ This guide walks you through adding a new agent to the 52 Card Pickup simulation
 ## Prerequisites
 
 - You've read through Phase 1 and understand how the state graph works
-- You can run `python card_pickup.py --phase 1` successfully
+- You can run `python -m card_pickup --phase 1` successfully
 
 ## Step 1: Define Your Agent's Role
 
@@ -19,7 +19,7 @@ Every agent in this system is a Python function that receives the shared `AppSta
 
 ## Step 2: Update AppState (if needed)
 
-If your agent needs a new field, add it to the `AppState` TypedDict in `card_pickup.py`:
+If your agent needs a new field, add it to the `AppState` TypedDict in `card_pickup/_core.py`:
 
 ```python
 class AppState(TypedDict):
@@ -39,7 +39,7 @@ def _make_initial_state(num_agents: int = 1) -> AppState:
 
 ## Step 3: Write the Node Function
 
-Add your agent function in `card_pickup.py`, near the other node functions:
+Add your agent function in `card_pickup/_core.py`, near the other node functions:
 
 ```python
 SUIT_ORDER = {"hearts": 0, "diamonds": 1, "clubs": 2, "spades": 3}

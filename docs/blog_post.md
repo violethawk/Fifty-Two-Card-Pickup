@@ -72,13 +72,13 @@ cd Fifty-Two-Card-Pickup
 pip install -r requirements.txt
 
 # Phase 1 — no API key needed
-python card_pickup.py --phase 1
+python -m card_pickup --phase 1
 
 # Benchmarks — all patterns, all configs
-python card_pickup.py --benchmark
+python -m card_pickup --benchmark
 
 # Full suite — needs ANTHROPIC_API_KEY
-python card_pickup.py
+python -m card_pickup
 ```
 
 The code is designed to be read, modified, and extended. Add your own agent (there's a guide). Swap in your own LLM provider (there's an interface). Create your own scatter pattern (there's a template). Run the benchmarks and see what wins.

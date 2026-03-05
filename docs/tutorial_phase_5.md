@@ -26,7 +26,7 @@ The benchmark suite (`benchmarks.py`) provides six standardized scatter patterns
 Run it:
 
 ```bash
-python card_pickup.py --benchmark
+python -m card_pickup --benchmark
 ```
 
 Each pattern is deterministic — same positions every time. This lets you compare strategies fairly: any difference in timing is due to the strategy, not the scatter.
@@ -148,11 +148,11 @@ class FurthestFromAgentsStrategy(PickupStrategy):
 ## CLI Flags
 
 ```bash
-python card_pickup.py --strategy greedy    # Phase 1 style
-python card_pickup.py --strategy llm       # Phase 3 style
-python card_pickup.py --provider anthropic  # Real API calls
-python card_pickup.py --provider mock       # No API key needed
-python card_pickup.py --benchmark           # Run all patterns
+python -m card_pickup --strategy greedy    # Phase 1 style
+python -m card_pickup --strategy llm       # Phase 3 style
+python -m card_pickup --provider anthropic  # Real API calls
+python -m card_pickup --provider mock       # No API key needed
+python -m card_pickup --benchmark           # Run all patterns
 ```
 
 ## Project Structure
