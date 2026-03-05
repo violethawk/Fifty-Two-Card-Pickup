@@ -135,16 +135,22 @@ def plot_grid(
     ax.set_xticks(range(11))
     ax.set_yticks(range(11))
 
-    # Legend for suits (always shown to prevent layout shifts)
+    # Legend for suits + verifier (placed below the grid)
     handles = [
         plt.Line2D([0], [0], marker=SUIT_MARKERS[s], color="w",
                    markerfacecolor=c, markersize=8, label=s.capitalize(),
                    markeredgecolor="white", markeredgewidth=0.5)
         for s, c in SUIT_COLORS.items()
     ]
-    ax.legend(handles=handles, loc="upper right", fontsize=8)
+    handles.append(
+        plt.Line2D([0], [0], marker="*", color="w", markerfacecolor="#f1c40f",
+                   markersize=10, label="Verifier", markeredgecolor="#d4ac0d",
+                   markeredgewidth=0.5)
+    )
+    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.02),
+              ncol=5, fontsize=7, frameon=False)
 
-    fig.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.06)
+    fig.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.12)
     return fig
 
 
