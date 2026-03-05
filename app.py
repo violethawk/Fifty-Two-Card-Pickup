@@ -360,10 +360,13 @@ def _build_trails(steps: List[Dict]) -> Dict[str, List[Tuple[float, float]]]:
     """Extract agent movement trails from step history."""
     trails: Dict[str, List[Tuple[float, float]]] = {}
     for step in steps:
-        for aid, pos in step["positions"].items():
+        active_agents = {evt["agent"] for evt in step.get("round_events", [])}
+        for aid in active_agents:
+            pos = step["positions"].get(aid)
+            if pos is None:
+                continue
             if aid not in trails:
                 trails[aid] = []
-            # Only add if position changed
             if not trails[aid] or trails[aid][-1] != pos:
                 trails[aid].append(pos)
     return trails
@@ -479,6 +482,7 @@ with tab1:
             progress_bar = progress_placeholder.progress(0, text="Picking up cards...")
             event_log_lines = []
             trails = {} if show_trails else None
+            trail_cursor = 0  # tracks how far we've built trails
 
             for i in range(0, len(steps), speed):
                 step = steps[min(i + speed - 1, len(steps) - 1)]
@@ -491,15 +495,21 @@ with tab1:
                 else:
                     title = f"Converge — {delivered}/52 cards delivered to verifier"
 
-                # Build trails up to this point
+                # Build trails incrementally — only add positions for agents
+                # that actually acted in each round
                 if show_trails:
-                    for j in range(0, min(i + speed, len(steps))):
+                    for j in range(trail_cursor, min(i + speed, len(steps))):
                         s = steps[j]
-                        for aid, pos in s["positions"].items():
+                        active_agents = {evt["agent"] for evt in s.get("round_events", [])}
+                        for aid in active_agents:
+                            pos = s["positions"].get(aid)
+                            if pos is None:
+                                continue
                             if aid not in trails:
                                 trails[aid] = []
                             if not trails[aid] or trails[aid][-1] != pos:
                                 trails[aid].append(pos)
+                    trail_cursor = min(i + speed, len(steps))
 
                 fig = plot_grid(
                     step["cards"],
