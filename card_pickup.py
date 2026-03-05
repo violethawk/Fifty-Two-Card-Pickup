@@ -56,7 +56,7 @@ import random
 import statistics
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import List, Optional, TypedDict, Tuple
+from typing import Dict, List, Optional, TypedDict, Tuple
 
 import anthropic
 from langgraph.graph import END, START, StateGraph
@@ -86,6 +86,13 @@ class AppState(TypedDict):
     end_time: Optional[float]
     pickup_agents: int       # number of concurrent pickup agents
     supervisor_reasoning: Optional[str]  # natural language explanation from the supervisor
+    agent_positions: Optional[Dict[str, List[float]]]  # current (x, y) per agent
+    agent_intentions: Optional[Dict[str, str]]  # announced next target per agent
+    agent_strategies: Optional[Dict[str, str]]  # strategy explanation per agent
+    llm_calls: int           # total LLM API calls during pickup
+    conflicts_resolved: int  # total conflicts detected and resolved
+    total_input_tokens: int  # cumulative input tokens for cost tracking
+    total_output_tokens: int # cumulative output tokens for cost tracking
     result: Optional[str]    # textual report from the verifier
 
 
@@ -240,6 +247,10 @@ def supervisor_node(state: AppState) -> AppState:
             messages=[{"role": "user", "content": user_message}],
         )
         reply = response.content[0].text.strip()
+        if reply.startswith("```"):
+            reply = reply.split("\n", 1)[1] if "\n" in reply else reply[3:]
+            if reply.endswith("```"):
+                reply = reply[:-3].strip()
         decision = json.loads(reply)
         num_agents = int(decision["agents"])
         reasoning = decision.get("reasoning", "No reasoning provided.")
@@ -252,6 +263,290 @@ def supervisor_node(state: AppState) -> AppState:
 
     state["pickup_agents"] = num_agents
     state["supervisor_reasoning"] = reasoning
+    return state
+
+
+PICKUP_AGENT_SYSTEM_PROMPT = """\
+You are a pickup agent in a 52 Card Pickup simulation on a 10x10 grid.
+You are at position ({agent_x:.1f}, {agent_y:.1f}).
+
+Plan your next moves to efficiently collect cards. Each move costs time \
+proportional to the distance traveled (0.005s per unit).
+
+Prioritize:
+- Cards close to your current position (minimize travel distance)
+- Clusters of nearby cards (plan a path through them)
+- Cards that other agents are NOT heading toward (check their intentions)
+
+Respond with ONLY a JSON object (no markdown, no extra text):
+{{"targets": ["<rank> of <suit>", ...], "strategy": "<brief explanation>"}}
+
+List 5-10 cards in the order you want to collect them. Use exact card names \
+like "7 of hearts" or "K of spades".
+"""
+
+
+def _card_key(card: Card) -> str:
+    """Return a human-readable identifier for a card."""
+    return f"{card['rank']} of {card['suit']}"
+
+
+def _find_card_by_key(cards: List[Card], key: str) -> Optional[int]:
+    """Find the index of an unpicked card matching the given key string."""
+    for idx, card in enumerate(cards):
+        if not card["picked_up"] and _card_key(card) == key:
+            return idx
+    return None
+
+
+def _greedy_nearest_card(cards: List[Card], x: float, y: float) -> Optional[int]:
+    """Fallback: find the nearest unpicked card to (x, y)."""
+    best_idx = None
+    best_dist = float("inf")
+    for idx, card in enumerate(cards):
+        if card["picked_up"]:
+            continue
+        d = math.hypot(card["x"] - x, card["y"] - y)
+        if d < best_dist:
+            best_dist = d
+            best_idx = idx
+    return best_idx
+
+
+def _plan_agent_moves(
+    client: anthropic.Anthropic,
+    agent_id: str,
+    agent_x: float,
+    agent_y: float,
+    cards: List[Card],
+    all_positions: Dict[str, List[float]],
+    all_intentions: Dict[str, str],
+) -> Tuple[List[str], str, int, int]:
+    """Call Haiku to plan the next batch of moves for one agent.
+
+    Returns (target_keys, strategy, input_tokens, output_tokens).
+    On failure, returns a greedy fallback plan.
+    """
+    remaining = [c for c in cards if not c["picked_up"]]
+    remaining_desc = [
+        f"  {_card_key(c)} at ({c['x']:.1f}, {c['y']:.1f})"
+        for c in remaining
+    ]
+
+    other_info = []
+    for aid, pos in all_positions.items():
+        if aid == agent_id:
+            continue
+        intention = all_intentions.get(aid, "none")
+        other_info.append(
+            f"  {aid} at ({pos[0]:.1f}, {pos[1]:.1f}), heading toward: {intention}"
+        )
+
+    user_message = (
+        f"Remaining cards ({len(remaining)}):\n"
+        + "\n".join(remaining_desc)
+        + "\n\nOther agents:\n"
+        + ("\n".join(other_info) if other_info else "  (none)")
+    )
+
+    system = PICKUP_AGENT_SYSTEM_PROMPT.format(agent_x=agent_x, agent_y=agent_y)
+
+    try:
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=300,
+            system=system,
+            messages=[{"role": "user", "content": user_message}],
+        )
+        input_tokens = response.usage.input_tokens
+        output_tokens = response.usage.output_tokens
+        reply = response.content[0].text.strip()
+        # Strip markdown code fences if present
+        if reply.startswith("```"):
+            reply = reply.split("\n", 1)[1] if "\n" in reply else reply[3:]
+            if reply.endswith("```"):
+                reply = reply[:-3].strip()
+        decision = json.loads(reply)
+        targets = decision.get("targets", [])
+        strategy = decision.get("strategy", "No strategy provided.")
+        if not targets:
+            raise ValueError("Empty targets list")
+        return targets, strategy, input_tokens, output_tokens
+    except Exception:
+        # Fallback: greedy nearest-neighbor plan
+        fallback_targets = []
+        fx, fy = agent_x, agent_y
+        temp_remaining = list(remaining)
+        for _ in range(min(10, len(temp_remaining))):
+            best = None
+            best_dist = float("inf")
+            for c in temp_remaining:
+                d = math.hypot(c["x"] - fx, c["y"] - fy)
+                if d < best_dist:
+                    best_dist = d
+                    best = c
+            if best is None:
+                break
+            fallback_targets.append(_card_key(best))
+            fx, fy = best["x"], best["y"]
+            temp_remaining.remove(best)
+        return fallback_targets, "Fallback: greedy nearest-neighbor", 0, 0
+
+
+def _resolve_conflicts(
+    agent_targets: Dict[str, str],
+    agent_positions: Dict[str, List[float]],
+    cards: List[Card],
+) -> Dict[str, Optional[int]]:
+    """Resolve conflicts when multiple agents target the same card.
+
+    Returns a mapping of agent_id -> card_index (or None if agent must wait).
+    Closest agent wins; ties broken by agent_id (lexicographic).
+    """
+    # Group agents by their target
+    target_to_agents: Dict[str, List[str]] = {}
+    for agent_id, target_key in agent_targets.items():
+        target_to_agents.setdefault(target_key, []).append(agent_id)
+
+    resolved: Dict[str, Optional[int]] = {}
+    claimed_indices: set = set()
+
+    for target_key, competing_agents in target_to_agents.items():
+        card_idx = _find_card_by_key(cards, target_key)
+        if card_idx is None:
+            # Card doesn't exist or already picked — all agents miss
+            for aid in competing_agents:
+                resolved[aid] = None
+            continue
+
+        if len(competing_agents) == 1:
+            resolved[competing_agents[0]] = card_idx
+            claimed_indices.add(card_idx)
+        else:
+            # Conflict: closest agent wins
+            card = cards[card_idx]
+            competing_agents.sort(key=lambda aid: (
+                math.hypot(
+                    card["x"] - agent_positions[aid][0],
+                    card["y"] - agent_positions[aid][1],
+                ),
+                aid,  # tiebreaker
+            ))
+            resolved[competing_agents[0]] = card_idx
+            claimed_indices.add(card_idx)
+            for aid in competing_agents[1:]:
+                resolved[aid] = None
+
+    return resolved
+
+
+def llm_pickup_node(state: AppState) -> AppState:
+    """Pick up cards using LLM-powered agents with planning and conflict resolution.
+
+    Each round: agents plan (LLM call), broadcast intentions, resolve conflicts
+    deterministically, then execute one pickup each. Repeats until all cards collected.
+    """
+    cards = state["cards"]
+    num_agents = max(1, int(state.get("pickup_agents", 1)))
+    client = anthropic.Anthropic()
+
+    agent_ids = [f"agent_{i}" for i in range(num_agents)]
+    positions: Dict[str, List[float]] = {aid: [0.0, 0.0] for aid in agent_ids}
+    intentions: Dict[str, str] = {aid: "none" for aid in agent_ids}
+    strategies: Dict[str, str] = {}
+
+    llm_calls = 0
+    conflicts_resolved = 0
+    total_input_tokens = 0
+    total_output_tokens = 0
+
+    max_rounds = 200  # safety limit to prevent infinite loops
+    round_num = 0
+
+    while any(not c["picked_up"] for c in cards) and round_num < max_rounds:
+        round_num += 1
+
+        # Step 1: Plan — each agent calls Haiku for a batch of targets
+        agent_plans: Dict[str, List[str]] = {}
+        for aid in agent_ids:
+            targets, strategy, in_tok, out_tok = _plan_agent_moves(
+                client, aid,
+                positions[aid][0], positions[aid][1],
+                cards, positions, intentions,
+            )
+            agent_plans[aid] = targets
+            strategies[aid] = strategy
+            llm_calls += 1
+            total_input_tokens += in_tok
+            total_output_tokens += out_tok
+
+        # Step 2: Broadcast — each agent announces first valid target
+        round_targets: Dict[str, str] = {}
+        for aid in agent_ids:
+            for target_key in agent_plans[aid]:
+                if _find_card_by_key(cards, target_key) is not None:
+                    round_targets[aid] = target_key
+                    break
+            # If no valid target found in plan, try greedy fallback
+            if aid not in round_targets:
+                fallback_idx = _greedy_nearest_card(
+                    cards, positions[aid][0], positions[aid][1]
+                )
+                if fallback_idx is not None:
+                    round_targets[aid] = _card_key(cards[fallback_idx])
+
+        if not round_targets:
+            break  # no more cards to pick up
+
+        intentions = {aid: round_targets.get(aid, "none") for aid in agent_ids}
+
+        # Step 3: Resolve conflicts
+        resolved = _resolve_conflicts(round_targets, positions, cards)
+
+        # Count conflicts (agents that got None despite having a target)
+        for aid in round_targets:
+            if resolved.get(aid) is None:
+                conflicts_resolved += 1
+                # Try fallback: walk down the plan for an unclaimed card
+                claimed = {idx for idx in resolved.values() if idx is not None}
+                for target_key in agent_plans[aid]:
+                    idx = _find_card_by_key(cards, target_key)
+                    if idx is not None and idx not in claimed:
+                        resolved[aid] = idx
+                        claimed.add(idx)
+                        break
+                # Last resort: greedy
+                if resolved.get(aid) is None:
+                    for idx, c in enumerate(cards):
+                        if not c["picked_up"] and idx not in claimed:
+                            resolved[aid] = idx
+                            claimed.add(idx)
+                            break
+
+        # Step 4: Execute — agents travel and pick up their resolved cards
+        for aid in agent_ids:
+            card_idx = resolved.get(aid)
+            if card_idx is None:
+                continue
+            card = cards[card_idx]
+            dist = math.hypot(
+                card["x"] - positions[aid][0],
+                card["y"] - positions[aid][1],
+            )
+            time.sleep(dist * TRAVEL_COST_PER_UNIT)
+            card["picked_up"] = True
+            card["picked_up_by"] = aid
+            positions[aid] = [card["x"], card["y"]]
+
+    state["cards"] = cards
+    state["phase"] = "verify"
+    state["agent_positions"] = positions
+    state["agent_intentions"] = intentions
+    state["agent_strategies"] = strategies
+    state["llm_calls"] = state.get("llm_calls", 0) + llm_calls
+    state["conflicts_resolved"] = state.get("conflicts_resolved", 0) + conflicts_resolved
+    state["total_input_tokens"] = state.get("total_input_tokens", 0) + total_input_tokens
+    state["total_output_tokens"] = state.get("total_output_tokens", 0) + total_output_tokens
     return state
 
 
@@ -303,7 +598,7 @@ def _pickup_region(args: Tuple[int, List[Tuple[int, float, float]], str]) -> Lis
     computing distances happens here so that different regions can run
     concurrently across multiple processes.
     """
-    region_id, positions, agent_id = args
+    _region_id, positions, _agent_id = args
     # local copy of unpicked positions; each element is (index, x, y)
     remaining = list(positions)
     current_x, current_y = 0.0, 0.0
@@ -433,12 +728,13 @@ def verify_node(state: AppState) -> AppState:
     return state
 
 
-def build_graph(with_supervisor: bool = False) -> StateGraph:
+def build_graph(with_supervisor: bool = False, llm_pickup: bool = False) -> StateGraph:
     """Assemble and compile the LangGraph for the card pickup simulation.
 
     When *with_supervisor* is True the graph includes an LLM-powered supervisor
     node between scatter and timer_start that decides how many pickup agents to
-    deploy.  Otherwise the graph is the same deterministic Phase 1 graph.
+    deploy.  When *llm_pickup* is True the pickup node uses LLM-powered agents
+    with planning and conflict resolution instead of deterministic greedy pickup.
     """
     builder: StateGraph = StateGraph(AppState)
     # register nodes
@@ -446,7 +742,7 @@ def build_graph(with_supervisor: bool = False) -> StateGraph:
     if with_supervisor:
         builder.add_node("supervisor", supervisor_node)
     builder.add_node("timer_start", timer_start_node)
-    builder.add_node("pickup", pickup_node)
+    builder.add_node("pickup", llm_pickup_node if llm_pickup else pickup_node)
     builder.add_node("timer_stop", timer_stop_node)
     builder.add_node("verify", verify_node)
     # define edges
@@ -473,6 +769,13 @@ def _make_initial_state(num_agents: int = 1) -> AppState:
         "end_time": None,
         "pickup_agents": num_agents,
         "supervisor_reasoning": None,
+        "agent_positions": None,
+        "agent_intentions": None,
+        "agent_strategies": None,
+        "llm_calls": 0,
+        "conflicts_resolved": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
         "result": None,
     }
 
@@ -579,8 +882,78 @@ def print_summary(results: List[Tuple[int, List[float], int]]) -> None:
         )
 
 
+HAIKU_INPUT_COST_PER_M = 0.80   # dollars per million input tokens
+HAIKU_OUTPUT_COST_PER_M = 4.00  # dollars per million output tokens
+
+
+def _estimate_cost(input_tokens: int, output_tokens: int) -> float:
+    """Estimate API cost in dollars for Haiku usage."""
+    return (
+        input_tokens * HAIKU_INPUT_COST_PER_M / 1_000_000
+        + output_tokens * HAIKU_OUTPUT_COST_PER_M / 1_000_000
+    )
+
+
+def run_llm_comparison(trials: int = 3) -> None:
+    """Run LLM-powered agents and compare against deterministic Phase 1.
+
+    For each trial, runs both the LLM pickup (with supervisor) and the
+    deterministic brute-force (best of 1/2/4 agents) with the same seed.
+    """
+    llm_graph = build_graph(with_supervisor=True, llm_pickup=True)
+    brute_graph = build_graph(with_supervisor=False, llm_pickup=False)
+
+    print("\n=== Phase 3: LLM Agents vs. Deterministic Comparison ===\n")
+    header = ["Trial", "LLM Agents", "LLM Time (s)", "BF Best Time (s)",
+              "LLM Calls", "Conflicts", "Est. Cost", "Verifier"]
+    print("| " + " | ".join(header) + " |")
+    print("|" + "--------|" * len(header))
+
+    for i in range(trials):
+        seed = 42 + i
+
+        # --- LLM pickup run ---
+        random.seed(seed)
+        llm_state = llm_graph.invoke(_make_initial_state(num_agents=1))
+        llm_elapsed = _extract_elapsed(llm_state)
+        llm_agents = llm_state["pickup_agents"]
+        llm_calls = llm_state.get("llm_calls", 0)
+        conflicts = llm_state.get("conflicts_resolved", 0)
+        in_tok = llm_state.get("total_input_tokens", 0)
+        out_tok = llm_state.get("total_output_tokens", 0)
+        cost = _estimate_cost(in_tok, out_tok)
+        llm_passed = llm_state.get("result", "").startswith("PASS")
+
+        # --- Brute-force baseline (same seed) ---
+        bf_times = []
+        for n in (1, 2, 4):
+            random.seed(seed)
+            bf_state = brute_graph.invoke(_make_initial_state(n))
+            bf_times.append(_extract_elapsed(bf_state))
+        best_bf = min(bf_times)
+
+        verifier_str = "PASS" if llm_passed else "FAIL"
+        print(
+            f"| {i+1} | {llm_agents} | {llm_elapsed:.4f} | {best_bf:.4f} "
+            f"| {llm_calls} | {conflicts} | ${cost:.4f} | {verifier_str} |"
+        )
+
+        reasoning = llm_state.get("supervisor_reasoning", "")
+        if reasoning:
+            print(f"  Supervisor: {reasoning}")
+
+        strategies = llm_state.get("agent_strategies", {})
+        for aid, strat in sorted(strategies.items()):
+            print(f"  {aid} strategy: {strat}")
+
+        if not llm_passed:
+            print(f"  WARNING: {llm_state.get('result', '')}")
+
+    print(f"\n  Token usage last run: {in_tok} input, {out_tok} output")
+
+
 def main() -> None:
-    """Run the Phase 1 scaling experiment and the Phase 2 supervisor comparison."""
+    """Run all phase experiments."""
     # Phase 1: brute-force scaling experiment
     print("=== Phase 1: Brute-Force Scaling Experiment ===\n")
     configurations = [1, 2, 4]
@@ -590,11 +963,14 @@ def main() -> None:
         summary_results.append((num_agents, times, passes))
     print_summary(summary_results)
 
-    # Phase 2: supervisor comparison
     if os.environ.get("ANTHROPIC_API_KEY"):
+        # Phase 2: supervisor comparison
         run_supervisor_comparison(trials=5)
+        # Phase 3: LLM agents comparison
+        run_llm_comparison(trials=3)
     else:
         print("\n=== Phase 2: Skipped (ANTHROPIC_API_KEY not set) ===")
+        print("=== Phase 3: Skipped (ANTHROPIC_API_KEY not set) ===")
 
 
 if __name__ == "__main__":
