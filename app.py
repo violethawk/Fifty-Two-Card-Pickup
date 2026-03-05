@@ -55,10 +55,10 @@ SUIT_MARKERS = {
 }
 
 SUIT_LABELS = {
-    "hearts": "\u2665 Hearts",
-    "diamonds": "\u2666 Diamonds",
-    "clubs": "\u2663 Clubs",
-    "spades": "\u2660 Spades",
+    "hearts": "Hearts",
+    "diamonds": "Diamonds",
+    "clubs": "Clubs",
+    "spades": "Spades",
 }
 
 AGENT_COLORS = ["#3498db", "#e74c3c", "#27ae60", "#9b59b6"]
@@ -508,19 +508,22 @@ st.set_page_config(
 )
 
 # Read query params for shareable links
-qp = st.query_params
-if "seed" in qp and "seed_input" not in st.session_state:
-    try:
-        st.session_state["seed_input"] = int(qp["seed"])
-    except (ValueError, TypeError):
-        pass
-if "agents" in qp and "qp_agents" not in st.session_state:
-    try:
-        st.session_state["qp_agents"] = int(qp["agents"])
-    except (ValueError, TypeError):
-        pass
-if "pattern" in qp and "qp_pattern" not in st.session_state:
-    st.session_state["qp_pattern"] = qp["pattern"]
+try:
+    qp = st.query_params
+    if "seed" in qp and "seed_input" not in st.session_state:
+        try:
+            st.session_state["seed_input"] = int(qp["seed"])
+        except (ValueError, TypeError):
+            pass
+    if "agents" in qp and "qp_agents" not in st.session_state:
+        try:
+            st.session_state["qp_agents"] = int(qp["agents"])
+        except (ValueError, TypeError):
+            pass
+    if "pattern" in qp and "qp_pattern" not in st.session_state:
+        st.session_state["qp_pattern"] = qp["pattern"]
+except Exception:
+    pass
 
 st.title("\U0001f0cf 52 Card Pickup — Multi-Agent Simulation")
 st.markdown("*The canonical hello world for multi-agent LLM systems*")
