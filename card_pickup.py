@@ -1113,11 +1113,25 @@ def main() -> None:
                         help="Save event logs to JSON files")
     parser.add_argument("--phase", type=int, choices=[1, 2, 3], default=0,
                         help="Run only the specified phase (default: all)")
+    parser.add_argument("--benchmark", action="store_true",
+                        help="Run the benchmark suite across all scatter patterns")
+    parser.add_argument("--strategy", type=str, choices=["greedy", "llm"],
+                        default="greedy",
+                        help="Pickup strategy plugin (default: greedy)")
+    parser.add_argument("--provider", type=str, choices=["anthropic", "mock"],
+                        default="anthropic",
+                        help="LLM provider plugin (default: anthropic)")
     args = parser.parse_args()
 
     # Replay mode
     if args.replay:
         replay_event_log(args.replay)
+        return
+
+    # Benchmark mode
+    if args.benchmark:
+        from benchmarks import run_benchmarks
+        run_benchmarks()
         return
 
     run_phase1 = args.phase == 0 or args.phase == 1
