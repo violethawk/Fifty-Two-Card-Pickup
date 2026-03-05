@@ -7,11 +7,14 @@ Run with:
 
 from __future__ import annotations
 
+import base64
 import math
 import random
 import time
 from typing import Dict, List, Tuple
+from urllib.parse import urlencode
 
+import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import streamlit as st
@@ -53,6 +56,30 @@ SUIT_MARKERS = {
 
 AGENT_COLORS = ["#3498db", "#e74c3c", "#27ae60", "#9b59b6"]
 
+# Dark-mode-aware colors — detect Streamlit theme
+def _is_dark_mode() -> bool:
+    """Best-effort dark mode detection via Streamlit theme config."""
+    try:
+        theme = st.get_option("theme.base")
+        return theme == "dark"
+    except Exception:
+        return False
+
+DARK_MODE = _is_dark_mode()
+
+# Matplotlib style for dark/light mode
+def _apply_plot_theme(fig, ax):
+    """Apply dark or light theme to a matplotlib figure."""
+    if DARK_MODE:
+        fig.patch.set_facecolor("#0e1117")
+        ax.set_facecolor("#0e1117")
+        ax.tick_params(colors="#fafafa")
+        ax.xaxis.label.set_color("#fafafa")
+        ax.yaxis.label.set_color("#fafafa")
+        for spine in ax.spines.values():
+            spine.set_color("#333333")
+
+
 # ---------------------------------------------------------------------------
 # Plotting helpers
 # ---------------------------------------------------------------------------
@@ -65,22 +92,28 @@ def plot_grid(
     show_verifier: bool = True,
     trails: Dict[str, List[Tuple[float, float]]] | None = None,
     num_agents: int = 0,
+    scoreboard: Dict[str, int] | None = None,
 ) -> plt.Figure:
     """Render the 10x10 grid with cards and optional agent positions."""
     fig, ax = plt.subplots(figsize=(3.5, 3.5), dpi=80)
+    _apply_plot_theme(fig, ax)
+
+    title_color = "#fafafa" if DARK_MODE else "#000000"
+    grid_color = "#444444" if DARK_MODE else "#cccccc"
+    picked_color = "#555555" if DARK_MODE else "#cccccc"
 
     # Region shading
     if show_regions == 2:
         ax.axvspan(0, 5, alpha=0.05, color=AGENT_COLORS[0])
         ax.axvspan(5, 10, alpha=0.05, color=AGENT_COLORS[1])
-        ax.axvline(5, color="#cccccc", linestyle="--", linewidth=1)
+        ax.axvline(5, color=grid_color, linestyle="--", linewidth=1)
     elif show_regions == 4:
         for i, (x0, x1, y0, y1) in enumerate([
             (0, 5, 0, 5), (5, 10, 0, 5), (0, 5, 5, 10), (5, 10, 5, 10)
         ]):
             ax.fill_between([x0, x1], y0, y1, alpha=0.05, color=AGENT_COLORS[i])
-        ax.axvline(5, color="#cccccc", linestyle="--", linewidth=1)
-        ax.axhline(5, color="#cccccc", linestyle="--", linewidth=1)
+        ax.axvline(5, color=grid_color, linestyle="--", linewidth=1)
+        ax.axhline(5, color=grid_color, linestyle="--", linewidth=1)
 
     # Agent trails
     if trails:
@@ -98,7 +131,7 @@ def plot_grid(
 
     # Draw picked cards (faded)
     for c in picked:
-        ax.scatter(c["x"], c["y"], c="#cccccc", marker="o", s=30, alpha=0.3, zorder=1)
+        ax.scatter(c["x"], c["y"], c=picked_color, marker="o", s=30, alpha=0.3, zorder=1)
 
     # Draw unpicked cards (colored by suit)
     for suit, color in SUIT_COLORS.items():
@@ -117,7 +150,10 @@ def plot_grid(
             color = AGENT_COLORS[idx % len(AGENT_COLORS)]
             ax.plot(ax_, ay, "o", color=color, markersize=14, markeredgecolor="white",
                     markeredgewidth=2, zorder=5)
-            ax.annotate(aid.split("_")[1], (ax_, ay), ha="center", va="center",
+            label = aid.split("_")[1]
+            if scoreboard and aid in scoreboard:
+                label = f"{scoreboard[aid]}"
+            ax.annotate(label, (ax_, ay), ha="center", va="center",
                         fontsize=8, fontweight="bold", color="white", zorder=6)
 
     # Verifier station
@@ -131,7 +167,7 @@ def plot_grid(
     ax.set_xlim(-0.3, 10.3)
     ax.set_ylim(-0.3, 10.3)
     ax.set_aspect("equal")
-    fig.suptitle(title, fontsize=12, fontweight="bold")
+    fig.suptitle(title, fontsize=12, fontweight="bold", color=title_color)
     ax.grid(True, alpha=0.15, linestyle="--")
     ax.set_xticks(range(11))
     ax.set_yticks(range(11))
@@ -145,6 +181,10 @@ def plot_grid(
     ]
     leg1 = ax.legend(handles=card_handles, loc="upper center", bbox_to_anchor=(0.5, -0.06),
                      ncol=4, fontsize=7, frameon=False)
+    # Color legend text for dark mode
+    if DARK_MODE:
+        for text in leg1.get_texts():
+            text.set_color("#fafafa")
 
     # Row 2: verifier + agents (always 5 items for consistent layout)
     n = num_agents or (len(agent_positions) if agent_positions else 0)
@@ -173,6 +213,8 @@ def plot_grid(
                      ncol=5, fontsize=7, frameon=False)
     # Hide placeholder labels
     for i, text in enumerate(leg2.get_texts()):
+        if DARK_MODE:
+            text.set_color("#fafafa")
         if i > n:  # after verifier + active agents
             text.set_alpha(0)
     for i, handle in enumerate(leg2.legend_handles):
@@ -189,6 +231,7 @@ def plot_benchmark_results(results: dict) -> plt.Figure:
     configs = [1, 2, 4]
 
     fig, ax = plt.subplots(figsize=(10, 5))
+    _apply_plot_theme(fig, ax)
     x = range(len(patterns))
     width = 0.25
 
@@ -200,7 +243,9 @@ def plot_benchmark_results(results: dict) -> plt.Figure:
 
     ax.set_xlabel("Scatter Pattern")
     ax.set_ylabel("Time (seconds)")
-    ax.set_title("Benchmark Results: Time by Pattern and Agent Count", fontweight="bold")
+    title_color = "#fafafa" if DARK_MODE else "#000000"
+    ax.set_title("Benchmark Results: Time by Pattern and Agent Count",
+                 fontweight="bold", color=title_color)
     ax.set_xticks([xi + width for xi in x])
     ax.set_xticklabels([p.replace("_", "\n") for p in patterns], fontsize=9)
     ax.legend()
@@ -217,6 +262,7 @@ def plot_compare(cards: List[Card], configs: List[int]) -> plt.Figure:
         axes = [axes]
 
     for ax, n in zip(axes, configs):
+        _apply_plot_theme(fig, ax)
         steps = simulate_pickup_steps([dict(c) for c in cards], n)
         final = steps[-1] if steps else None
 
@@ -256,8 +302,9 @@ def plot_compare(cards: List[Card], configs: List[int]) -> plt.Figure:
         ax.set_xlim(-0.3, 10.3)
         ax.set_ylim(-0.3, 10.3)
         ax.set_aspect("equal")
+        title_color = "#fafafa" if DARK_MODE else "#000000"
         ax.set_title(f"{n} Agent{'s' if n > 1 else ''}\nDist: {total_dist:.1f} | Steps: {len(steps)}",
-                      fontsize=11, fontweight="bold")
+                      fontsize=11, fontweight="bold", color=title_color)
         ax.grid(True, alpha=0.15, linestyle="--")
         ax.set_xticks(range(11))
         ax.set_yticks(range(11))
@@ -449,10 +496,38 @@ st.set_page_config(
     page_title="52 Card Pickup",
     page_icon="\U0001f0cf",
     layout="wide",
+    initial_sidebar_state="collapsed",
 )
+
+# Read query params for shareable links
+qp = st.query_params
+if "seed" in qp and "seed_input" not in st.session_state:
+    try:
+        st.session_state["seed_input"] = int(qp["seed"])
+    except (ValueError, TypeError):
+        pass
+if "agents" in qp and "qp_agents" not in st.session_state:
+    try:
+        st.session_state["qp_agents"] = int(qp["agents"])
+    except (ValueError, TypeError):
+        pass
+if "pattern" in qp and "qp_pattern" not in st.session_state:
+    st.session_state["qp_pattern"] = qp["pattern"]
 
 st.title("\U0001f0cf 52 Card Pickup — Multi-Agent Simulation")
 st.markdown("*The canonical hello world for multi-agent LLM systems*")
+
+# How it works expander
+with st.expander("How it works"):
+    st.markdown("""
+**52 playing cards** are scattered on a 10x10 grid. Agents fan out to pick them up, then converge on a central verifier to deliver their cards.
+
+**Pipeline:** Scatter → Timer Start → Pickup (fan-out) → Delivery (converge) → Timer Stop → Verify
+
+**The tradeoff:** More agents pick up faster (smaller territories), but spend more time traveling back to the verifier. This makes the optimal agent count depend on the scatter pattern — clustered cards favor fewer agents, spread-out cards favor more.
+
+Built with [LangGraph](https://github.com/langchain-ai/langgraph) and [Claude](https://www.anthropic.com/claude). [Source code](https://github.com/violethawk/Fifty-Two-Card-Pickup).
+""")
 
 tab1, tab2, tab3, tab4 = st.tabs([
     "Interactive Simulation", "Compare Agents", "Benchmark Suite", "Pattern Gallery",
@@ -467,11 +542,18 @@ with tab1:
         source = st.radio("Card source", ["Random scatter", "Benchmark pattern"])
 
         if source == "Benchmark pattern":
-            pattern_name = st.selectbox("Pattern", list(PATTERNS.keys()))
+            default_pattern = st.session_state.pop("qp_pattern", None)
+            pattern_list = list(PATTERNS.keys())
+            pattern_idx = pattern_list.index(default_pattern) if default_pattern in pattern_list else 0
+            pattern_name = st.selectbox("Pattern", pattern_list, index=pattern_idx)
         else:
             pattern_name = None
 
-        num_agents = st.select_slider("Pickup agents", options=[1, 2, 4], value=2)
+        default_agents = st.session_state.pop("qp_agents", 2)
+        agent_options = [1, 2, 4]
+        default_agents = default_agents if default_agents in agent_options else 2
+        num_agents = st.select_slider("Pickup agents", options=agent_options,
+                                       value=default_agents)
 
         def _randomize_seed():
             st.session_state["seed_input"] = random.randint(0, 9999)
@@ -490,6 +572,11 @@ with tab1:
                           help="Cards picked per frame")
         show_trails = st.checkbox("Show agent trails", value=True)
 
+        # Supervisor toggle (Phase 2)
+        use_supervisor = st.checkbox("LLM Supervisor (Phase 2)",
+                                     value=False,
+                                     help="Let Claude decide the agent count based on scatter analysis")
+
         btn_col1, btn_col2 = st.columns(2)
         with btn_col1:
             run_btn = st.button("Run Simulation", type="primary")
@@ -497,9 +584,18 @@ with tab1:
             replay_btn = st.button("Replay",
                                    disabled="sim_steps" not in st.session_state)
 
+        # Shareable link
+        link_params = {"seed": int(seed), "agents": num_agents}
+        if pattern_name:
+            link_params["pattern"] = pattern_name
+        share_url = f"?{urlencode(link_params)}"
+        st.caption(f"[Shareable link]({share_url}) for this configuration")
+
     with col_viz:
         viz_placeholder = st.empty()
         progress_placeholder = st.empty()
+        # Live scoreboard placeholder
+        scoreboard_placeholder = st.empty()
         stats_placeholder = st.empty()
         log_placeholder = st.empty()
 
@@ -512,11 +608,47 @@ with tab1:
                 state = scatter_node(state)
                 return state["cards"]
 
+        def _run_supervisor(cards):
+            """Run LLM supervisor to decide agent count. Returns (num_agents, reasoning)."""
+            try:
+                from card_pickup import _analyze_scatter, SUPERVISOR_SYSTEM_PROMPT
+                import anthropic
+                import json
+
+                metrics = _analyze_scatter(cards)
+                user_message = (
+                    "Here is the spatial analysis of the current card scatter:\n\n"
+                    + json.dumps(metrics, indent=2)
+                    + "\n\nHow many pickup agents should I deploy?"
+                )
+                client = anthropic.Anthropic()
+                response = client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=200,
+                    system=SUPERVISOR_SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": user_message}],
+                )
+                reply = response.content[0].text.strip()
+                if reply.startswith("```"):
+                    reply = reply.split("\n", 1)[1] if "\n" in reply else reply[3:]
+                    if reply.endswith("```"):
+                        reply = reply[:-3].strip()
+                decision = json.loads(reply)
+                n = int(decision["agents"])
+                reasoning = decision.get("reasoning", "No reasoning provided.")
+                if n not in (1, 2, 4):
+                    n = 2
+                return n, reasoning
+            except Exception as e:
+                return None, f"Supervisor failed: {e}"
+
         def _animate(steps, speed, num_agents, show_trails):
             progress_bar = progress_placeholder.progress(0, text="Picking up cards...")
             event_log_lines = []
             trails = {} if show_trails else None
             trail_cursor = 0  # tracks how far we've built trails
+            # Per-agent card count for live scoreboard
+            live_scores = {}
 
             for i in range(0, len(steps), speed):
                 step = steps[min(i + speed - 1, len(steps) - 1)]
@@ -525,9 +657,17 @@ with tab1:
                 delivered = step.get("delivered", 0)
 
                 if phase == "pickup":
-                    title = f"Fan Out — {picked}/52 cards picked"
+                    title = f"Fan Out \u2014 {picked}/52 cards picked"
                 else:
-                    title = f"Converge — {delivered}/52 cards delivered to verifier"
+                    title = f"Converge \u2014 {delivered}/52 cards delivered to verifier"
+
+                # Update live scores
+                for j in range(max(0, i - speed + 1) if i > 0 else 0, min(i + speed, len(steps))):
+                    s = steps[j]
+                    for evt in s.get("round_events", []):
+                        if evt["phase"] == "pickup":
+                            aid = evt["agent"]
+                            live_scores[aid] = live_scores.get(aid, 0) + 1
 
                 # Build trails incrementally — only add positions for agents
                 # that actually acted in each round
@@ -552,9 +692,23 @@ with tab1:
                     show_regions=num_agents,
                     trails=trails,
                     num_agents=num_agents,
+                    scoreboard=live_scores,
                 )
                 viz_placeholder.pyplot(fig, width="content")
                 plt.close(fig)
+
+                # Live scoreboard
+                if live_scores:
+                    score_cols = scoreboard_placeholder.columns(num_agents)
+                    for idx, aid in enumerate(sorted(live_scores.keys())):
+                        with score_cols[idx]:
+                            color = AGENT_COLORS[idx % len(AGENT_COLORS)]
+                            count = live_scores.get(aid, 0)
+                            st.markdown(
+                                f"<span style='color:{color};font-weight:bold'>"
+                                f"Agent {idx}</span>: {count} cards",
+                                unsafe_allow_html=True,
+                            )
 
                 # Progress bar — track both pickup and delivery
                 if picked < 52:
@@ -573,7 +727,7 @@ with tab1:
                         if evt["phase"] == "delivery":
                             if evt["card"].startswith("delivered"):
                                 event_log_lines.append(
-                                    f"`{evt['agent']}` — {evt['card']}"
+                                    f"`{evt['agent']}` \u2014 {evt['card']}"
                                 )
                         else:
                             event_log_lines.append(
@@ -647,12 +801,24 @@ with tab1:
         # Run simulation
         if run_btn:
             cards = _get_cards()
-            _scatter_animation(cards, num_agents)
-            steps = simulate_pickup_steps(cards, num_agents)
+
+            # Supervisor decision
+            effective_agents = num_agents
+            if use_supervisor:
+                with st.spinner("Supervisor analyzing scatter pattern..."):
+                    sup_agents, reasoning = _run_supervisor(cards)
+                if sup_agents is not None:
+                    effective_agents = sup_agents
+                    st.info(f"Supervisor chose **{sup_agents} agent{'s' if sup_agents > 1 else ''}**: {reasoning}")
+                else:
+                    st.warning(f"Supervisor unavailable, using {num_agents} agents. {reasoning}")
+
+            _scatter_animation(cards, effective_agents)
+            steps = simulate_pickup_steps(cards, effective_agents)
             st.session_state["sim_steps"] = steps
-            st.session_state["sim_agents"] = num_agents
+            st.session_state["sim_agents"] = effective_agents
             st.session_state["sim_show_trails"] = show_trails
-            _animate(steps, speed, num_agents, show_trails)
+            _animate(steps, speed, effective_agents, show_trails)
 
         # Replay cached simulation
         if replay_btn and "sim_steps" in st.session_state:
