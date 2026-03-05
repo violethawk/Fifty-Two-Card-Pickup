@@ -135,15 +135,14 @@ def plot_grid(
     ax.set_xticks(range(11))
     ax.set_yticks(range(11))
 
-    # Legend for suits (use scatter markers, not plain patches)
-    if unpicked:
-        handles = [
-            plt.Line2D([0], [0], marker=SUIT_MARKERS[s], color="w",
-                       markerfacecolor=c, markersize=8, label=s.capitalize(),
-                       markeredgecolor="white", markeredgewidth=0.5)
-            for s, c in SUIT_COLORS.items()
-        ]
-        ax.legend(handles=handles, loc="upper right", fontsize=8)
+    # Legend for suits (always shown to prevent layout shifts)
+    handles = [
+        plt.Line2D([0], [0], marker=SUIT_MARKERS[s], color="w",
+                   markerfacecolor=c, markersize=8, label=s.capitalize(),
+                   markeredgecolor="white", markeredgewidth=0.5)
+        for s, c in SUIT_COLORS.items()
+    ]
+    ax.legend(handles=handles, loc="upper right", fontsize=8)
 
     plt.tight_layout()
     return fig
