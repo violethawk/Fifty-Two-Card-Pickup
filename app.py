@@ -615,6 +615,27 @@ with tab1:
             with log_placeholder.expander(f"Event Log ({len(event_log_lines)} events)", expanded=False):
                 st.markdown("\n".join(event_log_lines))
 
+        def _scatter_animation(cards, num_agents):
+            """Animate cards being 'thrown' from center to final positions."""
+            n_frames = 10
+            cx, cy = 5.0, 5.0  # center of grid
+            for frame in range(n_frames + 1):
+                t = frame / n_frames
+                # Ease-out: fast start, slow finish (like a throw)
+                ease = 1 - (1 - t) ** 3
+                frame_cards = []
+                for c in cards:
+                    fc = dict(c)
+                    fc["x"] = cx + (c["x"] - cx) * ease
+                    fc["y"] = cy + (c["y"] - cy) * ease
+                    frame_cards.append(fc)
+                title = "Scattering cards..." if frame < n_frames else "Ready to run"
+                fig = plot_grid(frame_cards, title=title,
+                                show_regions=num_agents, num_agents=num_agents)
+                viz_placeholder.pyplot(fig, width="content")
+                plt.close(fig)
+                time.sleep(0.04)
+
         # Show initial grid
         if not run_btn and not replay_btn:
             display_cards = _get_cards()
@@ -626,6 +647,7 @@ with tab1:
         # Run simulation
         if run_btn:
             cards = _get_cards()
+            _scatter_animation(cards, num_agents)
             steps = simulate_pickup_steps(cards, num_agents)
             st.session_state["sim_steps"] = steps
             st.session_state["sim_agents"] = num_agents
