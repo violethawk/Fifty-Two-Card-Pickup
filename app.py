@@ -572,11 +572,6 @@ with tab1:
                           help="Cards picked per frame")
         show_trails = st.checkbox("Show agent trails", value=True)
 
-        # Supervisor toggle (Phase 2)
-        use_supervisor = st.checkbox("LLM Supervisor (Phase 2)",
-                                     value=False,
-                                     help="Let Claude decide the agent count based on scatter analysis")
-
         btn_col1, btn_col2 = st.columns(2)
         with btn_col1:
             run_btn = st.button("Run Simulation", type="primary")
@@ -607,40 +602,6 @@ with tab1:
                 state = _make_initial_state(num_agents)
                 state = scatter_node(state)
                 return state["cards"]
-
-        def _run_supervisor(cards):
-            """Run LLM supervisor to decide agent count. Returns (num_agents, reasoning)."""
-            try:
-                from card_pickup import _analyze_scatter, SUPERVISOR_SYSTEM_PROMPT
-                import anthropic
-                import json
-
-                metrics = _analyze_scatter(cards)
-                user_message = (
-                    "Here is the spatial analysis of the current card scatter:\n\n"
-                    + json.dumps(metrics, indent=2)
-                    + "\n\nHow many pickup agents should I deploy?"
-                )
-                client = anthropic.Anthropic()
-                response = client.messages.create(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=200,
-                    system=SUPERVISOR_SYSTEM_PROMPT,
-                    messages=[{"role": "user", "content": user_message}],
-                )
-                reply = response.content[0].text.strip()
-                if reply.startswith("```"):
-                    reply = reply.split("\n", 1)[1] if "\n" in reply else reply[3:]
-                    if reply.endswith("```"):
-                        reply = reply[:-3].strip()
-                decision = json.loads(reply)
-                n = int(decision["agents"])
-                reasoning = decision.get("reasoning", "No reasoning provided.")
-                if n not in (1, 2, 4):
-                    n = 2
-                return n, reasoning
-            except Exception as e:
-                return None, f"Supervisor failed: {e}"
 
         def _animate(steps, speed, num_agents, show_trails):
             progress_bar = progress_placeholder.progress(0, text="Picking up cards...")
@@ -802,23 +763,12 @@ with tab1:
         if run_btn:
             cards = _get_cards()
 
-            # Supervisor decision
-            effective_agents = num_agents
-            if use_supervisor:
-                with st.spinner("Supervisor analyzing scatter pattern..."):
-                    sup_agents, reasoning = _run_supervisor(cards)
-                if sup_agents is not None:
-                    effective_agents = sup_agents
-                    st.info(f"Supervisor chose **{sup_agents} agent{'s' if sup_agents > 1 else ''}**: {reasoning}")
-                else:
-                    st.warning(f"Supervisor unavailable, using {num_agents} agents. {reasoning}")
-
-            _scatter_animation(cards, effective_agents)
-            steps = simulate_pickup_steps(cards, effective_agents)
+            _scatter_animation(cards, num_agents)
+            steps = simulate_pickup_steps(cards, num_agents)
             st.session_state["sim_steps"] = steps
-            st.session_state["sim_agents"] = effective_agents
+            st.session_state["sim_agents"] = num_agents
             st.session_state["sim_show_trails"] = show_trails
-            _animate(steps, speed, effective_agents, show_trails)
+            _animate(steps, speed, num_agents, show_trails)
 
         # Replay cached simulation
         if replay_btn and "sim_steps" in st.session_state:
