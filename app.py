@@ -612,6 +612,7 @@ with tab1:
             trail_cursor = 0  # tracks how far we've built trails
             # Per-agent card count for live scoreboard
             live_scores = {}
+            score_cursor = 0
 
             for i in range(0, len(steps), speed):
                 step = steps[min(i + speed - 1, len(steps) - 1)]
@@ -624,13 +625,14 @@ with tab1:
                 else:
                     title = f"Converge \u2014 {delivered}/52 cards delivered to verifier"
 
-                # Update live scores
-                for j in range(max(0, i - speed + 1) if i > 0 else 0, min(i + speed, len(steps))):
+                # Update live scores (no double-counting)
+                for j in range(score_cursor, min(i + speed, len(steps))):
                     s = steps[j]
                     for evt in s.get("round_events", []):
                         if evt["phase"] == "pickup":
                             aid = evt["agent"]
                             live_scores[aid] = live_scores.get(aid, 0) + 1
+                score_cursor = min(i + speed, len(steps))
 
                 # Build trails incrementally — only add positions for agents
                 # that actually acted in each round
@@ -662,16 +664,18 @@ with tab1:
 
                 # Live scoreboard
                 if live_scores:
-                    score_cols = scoreboard_placeholder.columns(num_agents)
+                    score_parts = []
                     for idx, aid in enumerate(sorted(live_scores.keys())):
-                        with score_cols[idx]:
-                            color = AGENT_COLORS[idx % len(AGENT_COLORS)]
-                            count = live_scores.get(aid, 0)
-                            st.markdown(
-                                f"<span style='color:{color};font-weight:bold'>"
-                                f"Agent {idx}</span>: {count} cards",
-                                unsafe_allow_html=True,
-                            )
+                        color = AGENT_COLORS[idx % len(AGENT_COLORS)]
+                        count = live_scores.get(aid, 0)
+                        score_parts.append(
+                            f"<span style='color:{color};font-weight:bold'>"
+                            f"Agent {idx}</span>: {count}"
+                        )
+                    scoreboard_placeholder.markdown(
+                        " &nbsp;&nbsp; ".join(score_parts),
+                        unsafe_allow_html=True,
+                    )
 
                 # Progress bar — track both pickup and delivery
                 if picked < 52:
