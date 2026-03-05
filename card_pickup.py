@@ -49,6 +49,7 @@ installing the dependencies listed in `requirements.txt`.
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import os
@@ -60,6 +61,20 @@ from typing import Dict, List, Optional, TypedDict, Tuple
 
 import anthropic
 from langgraph.graph import END, START, StateGraph
+
+from observability import (
+    AnomalyDetector,
+    Dashboard,
+    EventLog,
+    GovernanceChecker,
+    GovernanceViolation,
+    MetricsCalculator,
+    replay_event_log,
+)
+
+# Module-level optional dashboard — pickup nodes check this for live updates.
+_active_dashboard: Optional[Dashboard] = None
+_active_event_log: Optional[EventLog] = None
 
 
 class Card(TypedDict):
@@ -93,6 +108,7 @@ class AppState(TypedDict):
     conflicts_resolved: int  # total conflicts detected and resolved
     total_input_tokens: int  # cumulative input tokens for cost tracking
     total_output_tokens: int # cumulative output tokens for cost tracking
+    event_log: Optional[List[dict]]  # serialized event records (Phase 4)
     result: Optional[str]    # textual report from the verifier
 
 
@@ -128,6 +144,12 @@ def scatter_node(state: AppState) -> AppState:
     # update state
     state["cards"] = cards
     state["phase"] = "pickup"
+    # Emit scatter event
+    if _active_event_log is not None:
+        _active_event_log.emit("scatter", data={
+            "cards": [{"rank": c["rank"], "suit": c["suit"],
+                       "x": round(c["x"], 2), "y": round(c["y"], 2)} for c in cards]
+        })
     return state
 
 
@@ -460,6 +482,10 @@ def llm_pickup_node(state: AppState) -> AppState:
     total_input_tokens = 0
     total_output_tokens = 0
 
+    elog = _active_event_log
+    dash = _active_dashboard
+    governance = GovernanceChecker(elog, agent_ids) if elog else None
+
     max_rounds = 200  # safety limit to prevent infinite loops
     round_num = 0
 
@@ -479,6 +505,11 @@ def llm_pickup_node(state: AppState) -> AppState:
             llm_calls += 1
             total_input_tokens += in_tok
             total_output_tokens += out_tok
+            if elog:
+                elog.emit("plan", agent_id=aid, data={
+                    "targets": targets[:3],
+                    "strategy": strategy[:100],
+                })
 
         # Step 2: Broadcast — each agent announces first valid target
         round_targets: Dict[str, str] = {}
@@ -500,6 +531,10 @@ def llm_pickup_node(state: AppState) -> AppState:
 
         intentions = {aid: round_targets.get(aid, "none") for aid in agent_ids}
 
+        for aid, target in round_targets.items():
+            if elog:
+                elog.emit("broadcast", agent_id=aid, data={"target": target})
+
         # Step 3: Resolve conflicts
         resolved = _resolve_conflicts(round_targets, positions, cards)
 
@@ -507,6 +542,21 @@ def llm_pickup_node(state: AppState) -> AppState:
         for aid in round_targets:
             if resolved.get(aid) is None:
                 conflicts_resolved += 1
+                if elog:
+                    # Find who won the card this agent wanted
+                    wanted = round_targets[aid]
+                    winner = None
+                    for other_aid, other_idx in resolved.items():
+                        if other_idx is not None and other_aid != aid:
+                            c = cards[other_idx]
+                            if _card_key(c) == wanted:
+                                winner = other_aid
+                                break
+                    elog.emit("conflict", data={
+                        "card": wanted,
+                        "winner": winner or "unknown",
+                        "losers": [aid],
+                    })
                 # Try fallback: walk down the plan for an unclaimed card
                 claimed = {idx for idx in resolved.values() if idx is not None}
                 for target_key in agent_plans[aid]:
@@ -524,10 +574,14 @@ def llm_pickup_node(state: AppState) -> AppState:
                             break
 
         # Step 4: Execute — agents travel and pick up their resolved cards
+        active_agents = []
+        idle_agents = []
         for aid in agent_ids:
             card_idx = resolved.get(aid)
             if card_idx is None:
+                idle_agents.append(aid)
                 continue
+            active_agents.append(aid)
             card = cards[card_idx]
             dist = math.hypot(
                 card["x"] - positions[aid][0],
@@ -537,6 +591,37 @@ def llm_pickup_node(state: AppState) -> AppState:
             card["picked_up"] = True
             card["picked_up_by"] = aid
             positions[aid] = [card["x"], card["y"]]
+            if elog:
+                elog.emit("pickup", agent_id=aid, data={
+                    "card": _card_key(card),
+                    "distance": round(dist, 3),
+                    "position": [round(card["x"], 2), round(card["y"], 2)],
+                })
+
+        # Emit round summary event
+        if elog:
+            picked_count = sum(1 for c in cards if c["picked_up"])
+            elog.emit("round", data={
+                "round": round_num,
+                "picked": picked_count,
+                "active_agents": active_agents,
+                "idle_agents": idle_agents,
+            })
+
+        # Governance check
+        if governance:
+            governance.check(cards)  # raises GovernanceViolation on failure
+
+        # Dashboard update
+        if dash:
+            picked_count = sum(1 for c in cards if c["picked_up"])
+            dash.update(
+                cards, positions, picked_count, 52,
+                elog.events[-10:] if elog else [],
+                {"elapsed": time.perf_counter() - (state.get("start_time") or 0),
+                 "round": round_num,
+                 "conflicts": conflicts_resolved},
+            )
 
     state["cards"] = cards
     state["phase"] = "verify"
@@ -547,6 +632,8 @@ def llm_pickup_node(state: AppState) -> AppState:
     state["conflicts_resolved"] = state.get("conflicts_resolved", 0) + conflicts_resolved
     state["total_input_tokens"] = state.get("total_input_tokens", 0) + total_input_tokens
     state["total_output_tokens"] = state.get("total_output_tokens", 0) + total_output_tokens
+    if elog:
+        state["event_log"] = elog.serialize()
     return state
 
 
@@ -681,10 +768,19 @@ def pickup_node(state: AppState) -> AppState:
     # Mark picked cards in the main state; preserve the pick ordering per agent
     for region_id, order in pickup_results:
         agent_id = f"agent_{region_id}"
+        prev_x, prev_y = 0.0, 0.0
         for card_idx in order:
             card = cards[card_idx]
+            dist = math.hypot(card["x"] - prev_x, card["y"] - prev_y)
             card["picked_up"] = True
             card["picked_up_by"] = agent_id
+            if _active_event_log is not None:
+                _active_event_log.emit("pickup", agent_id=agent_id, data={
+                    "card": _card_key(card),
+                    "distance": round(dist, 3),
+                    "position": [round(card["x"], 2), round(card["y"], 2)],
+                })
+            prev_x, prev_y = card["x"], card["y"]
 
     state["cards"] = cards
     state["phase"] = "verify"
@@ -725,6 +821,9 @@ def verify_node(state: AppState) -> AppState:
     else:
         state["result"] = "PASS"
     state["phase"] = "done"
+    if _active_event_log is not None:
+        _active_event_log.emit("verify", data={"result": state["result"]})
+        state["event_log"] = _active_event_log.serialize()
     return state
 
 
@@ -776,6 +875,7 @@ def _make_initial_state(num_agents: int = 1) -> AppState:
         "conflicts_resolved": 0,
         "total_input_tokens": 0,
         "total_output_tokens": 0,
+        "event_log": None,
         "result": None,
     }
 
@@ -952,25 +1052,145 @@ def run_llm_comparison(trials: int = 3) -> None:
     print(f"\n  Token usage last run: {in_tok} input, {out_tok} output")
 
 
+def _run_with_observability(
+    graph,
+    initial_state: AppState,
+    dashboard: bool = False,
+    save_log: Optional[str] = None,
+    label: str = "",
+) -> AppState:
+    """Run a graph invocation with event logging, governance, dashboard, and metrics."""
+    global _active_event_log, _active_dashboard
+
+    elog = EventLog()
+    _active_event_log = elog
+
+    dash = None
+    if dashboard:
+        dash = Dashboard()
+        dash.start()
+        _active_dashboard = dash
+
+    try:
+        final_state = graph.invoke(initial_state)
+    except GovernanceViolation as e:
+        print(f"\n  GOVERNANCE VIOLATION: {e}")
+        final_state = initial_state
+    finally:
+        if dash:
+            dash.stop()
+        _active_dashboard = None
+        _active_event_log = None
+
+    elapsed = _extract_elapsed(final_state)
+
+    # Metrics
+    if elog.events:
+        mc = MetricsCalculator(elog, elapsed)
+        mc.print_summary()
+
+        # Anomaly detection
+        num_agents = final_state.get("pickup_agents", 1)
+        ad = AnomalyDetector(elog, num_agents)
+        ad.print_warnings()
+
+    # Save event log if requested
+    if save_log:
+        elog.save(save_log)
+        print(f"\n  Event log saved to {save_log}")
+
+    return final_state
+
+
 def main() -> None:
     """Run all phase experiments."""
-    # Phase 1: brute-force scaling experiment
-    print("=== Phase 1: Brute-Force Scaling Experiment ===\n")
-    configurations = [1, 2, 4]
-    summary_results: List[Tuple[int, List[float], int]] = []
-    for num_agents in configurations:
-        times, passes = run_trials(num_agents)
-        summary_results.append((num_agents, times, passes))
-    print_summary(summary_results)
+    parser = argparse.ArgumentParser(description="52 Card Pickup — Multi-Agent Simulation")
+    parser.add_argument("--dashboard", action="store_true",
+                        help="Enable live terminal TUI dashboard")
+    parser.add_argument("--replay", type=str, metavar="FILE",
+                        help="Replay a saved event log through the dashboard")
+    parser.add_argument("--save-log", action="store_true",
+                        help="Save event logs to JSON files")
+    parser.add_argument("--phase", type=int, choices=[1, 2, 3], default=0,
+                        help="Run only the specified phase (default: all)")
+    args = parser.parse_args()
 
-    if os.environ.get("ANTHROPIC_API_KEY"):
+    # Replay mode
+    if args.replay:
+        replay_event_log(args.replay)
+        return
+
+    run_phase1 = args.phase == 0 or args.phase == 1
+    run_phase2 = args.phase == 0 or args.phase == 2
+    run_phase3 = args.phase == 0 or args.phase == 3
+    has_api_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+
+    # Phase 1: brute-force scaling experiment
+    if run_phase1:
+        print("=== Phase 1: Brute-Force Scaling Experiment ===\n")
+        configurations = [1, 2, 4]
+        summary_results: List[Tuple[int, List[float], int]] = []
+        for num_agents in configurations:
+            times, passes = run_trials(num_agents)
+            summary_results.append((num_agents, times, passes))
+        print_summary(summary_results)
+
+    if has_api_key:
         # Phase 2: supervisor comparison
-        run_supervisor_comparison(trials=5)
-        # Phase 3: LLM agents comparison
-        run_llm_comparison(trials=3)
+        if run_phase2:
+            run_supervisor_comparison(trials=5)
+
+        # Phase 3: LLM agents comparison (with observability)
+        if run_phase3:
+            print("\n=== Phase 3: LLM Agents vs. Deterministic Comparison ===\n")
+            llm_graph = build_graph(with_supervisor=True, llm_pickup=True)
+            brute_graph = build_graph(with_supervisor=False, llm_pickup=False)
+
+            for i in range(3):
+                seed = 42 + i
+                print(f"--- Trial {i+1} (seed={seed}) ---")
+
+                random.seed(seed)
+                log_path = f"event_log_trial_{i+1}.json" if args.save_log else None
+                llm_state = _run_with_observability(
+                    llm_graph,
+                    _make_initial_state(num_agents=1),
+                    dashboard=args.dashboard,
+                    save_log=log_path,
+                    label=f"Trial {i+1}",
+                )
+
+                llm_elapsed = _extract_elapsed(llm_state)
+                llm_agents = llm_state.get("pickup_agents", 1)
+                llm_calls = llm_state.get("llm_calls", 0)
+                conflicts = llm_state.get("conflicts_resolved", 0)
+                in_tok = llm_state.get("total_input_tokens", 0)
+                out_tok = llm_state.get("total_output_tokens", 0)
+                cost = _estimate_cost(in_tok, out_tok)
+                passed = llm_state.get("result", "").startswith("PASS")
+
+                # Brute-force baseline
+                bf_times = []
+                for n in (1, 2, 4):
+                    random.seed(seed)
+                    bf_state = brute_graph.invoke(_make_initial_state(n))
+                    bf_times.append(_extract_elapsed(bf_state))
+                best_bf = min(bf_times)
+
+                print(f"  LLM: {llm_agents} agents, {llm_elapsed:.4f}s, "
+                      f"{llm_calls} calls, {conflicts} conflicts, ${cost:.4f}")
+                print(f"  Brute-force best: {best_bf:.4f}s")
+                print(f"  Verifier: {'PASS' if passed else 'FAIL'}")
+
+                reasoning = llm_state.get("supervisor_reasoning", "")
+                if reasoning:
+                    print(f"  Supervisor: {reasoning}")
+                print()
     else:
-        print("\n=== Phase 2: Skipped (ANTHROPIC_API_KEY not set) ===")
-        print("=== Phase 3: Skipped (ANTHROPIC_API_KEY not set) ===")
+        if run_phase2:
+            print("\n=== Phase 2: Skipped (ANTHROPIC_API_KEY not set) ===")
+        if run_phase3:
+            print("=== Phase 3: Skipped (ANTHROPIC_API_KEY not set) ===")
 
 
 if __name__ == "__main__":
