@@ -66,7 +66,7 @@ def plot_grid(
     trails: Dict[str, List[Tuple[float, float]]] | None = None,
 ) -> plt.Figure:
     """Render the 10x10 grid with cards and optional agent positions."""
-    fig, ax = plt.subplots(figsize=(4, 4), dpi=80)
+    fig, ax = plt.subplots(figsize=(3.5, 3.5), dpi=80)
 
     # Region shading
     if show_regions == 2:
