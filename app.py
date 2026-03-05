@@ -318,7 +318,7 @@ with tab1:
                 display_cards = state["cards"]
 
             fig = plot_grid(display_cards, title="Ready to run", show_regions=num_agents)
-            viz_placeholder.pyplot(fig)
+            viz_placeholder.pyplot(fig, use_container_width=False)
             plt.close(fig)
 
         # Run simulation
@@ -345,7 +345,7 @@ with tab1:
                     title=f"Round {i+1} — {step['picked']}/52 cards picked",
                     show_regions=num_agents,
                 )
-                viz_placeholder.pyplot(fig)
+                viz_placeholder.pyplot(fig, use_container_width=False)
                 plt.close(fig)
 
                 progress_bar.progress(
