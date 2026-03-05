@@ -144,7 +144,7 @@ def plot_grid(
     ]
     ax.legend(handles=handles, loc="upper right", fontsize=8)
 
-    plt.tight_layout()
+    fig.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.06)
     return fig
 
 
