@@ -86,6 +86,8 @@ Options:
 
 ## Benchmark Patterns
 
+![Benchmark Scatter Patterns](images/patterns_overview.png)
+
 | Pattern | Description | Best Config |
 |---------|-------------|-------------|
 | `uniform` | Golden-ratio spiral across grid | 4 agents |
@@ -95,7 +97,7 @@ Options:
 | `diagonal` | Cards along (0,0)-(10,10) diagonal | 4 agents |
 | `edge` | Cards along grid perimeter | 4 agents |
 
-Run with `python card_pickup.py --benchmark`.
+Run with `python card_pickup.py --benchmark`. Generate visualizations with `python visualize.py`.
 
 ## Project Structure
 
@@ -104,6 +106,9 @@ card_pickup.py          Core simulation: agents, state, LangGraph pipeline
 observability.py        Event logging, governance, metrics, TUI dashboard
 benchmarks.py           Scatter patterns and benchmark runner
 plugins.py              LLM provider and pickup strategy interfaces
+visualize.py            Generate PNG visualizations of scatter patterns
+tests/                  Unit tests (35 tests, no API key needed)
+images/                 Generated scatter pattern visualizations
 prompts/                Tier 2 implementation prompts for each phase
 docs/
   tutorial_phase_1.md   Tutorial: deterministic agents
