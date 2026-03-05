@@ -424,7 +424,7 @@ with tab1:
                     step["cards"],
                     agent_positions=step["positions"],
                     title=title,
-                    show_regions=num_agents if phase == "pickup" else 0,
+                    show_regions=num_agents,
                 )
                 viz_placeholder.pyplot(fig, width="content")
                 plt.close(fig)
