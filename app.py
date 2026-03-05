@@ -130,7 +130,7 @@ def plot_grid(
     ax.set_xlim(-0.3, 10.3)
     ax.set_ylim(-0.3, 10.3)
     ax.set_aspect("equal")
-    ax.set_title(title, fontsize=14, fontweight="bold")
+    fig.suptitle(title, fontsize=12, fontweight="bold")
     ax.grid(True, alpha=0.15, linestyle="--")
     ax.set_xticks(range(11))
     ax.set_yticks(range(11))
