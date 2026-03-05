@@ -362,7 +362,7 @@ with tab1:
 
         num_agents = st.select_slider("Pickup agents", options=[1, 2, 4], value=2)
         seed = st.number_input("Random seed", value=42, min_value=0, max_value=9999)
-        speed = st.slider("Animation speed", min_value=1, max_value=20, value=8,
+        speed = st.slider("Animation speed", min_value=1, max_value=4, value=2,
                           help="Cards picked per frame")
 
         run_btn = st.button("Run Simulation", type="primary")
