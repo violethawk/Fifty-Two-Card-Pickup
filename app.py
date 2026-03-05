@@ -135,17 +135,17 @@ def plot_grid(
     ax.set_xticks(range(11))
     ax.set_yticks(range(11))
 
-    # Card legend (suits) — left side below grid
+    # Row 1: suit markers
     card_handles = [
         plt.Line2D([0], [0], marker=SUIT_MARKERS[s], color="w",
                    markerfacecolor=c, markersize=8, label=s.capitalize(),
                    markeredgecolor="white", markeredgewidth=0.5)
         for s, c in SUIT_COLORS.items()
     ]
-    leg1 = ax.legend(handles=card_handles, loc="upper left", bbox_to_anchor=(0.0, -0.08),
-                     ncol=4, fontsize=7, frameon=False, title="Cards", title_fontsize=7)
+    leg1 = ax.legend(handles=card_handles, loc="upper center", bbox_to_anchor=(0.5, -0.06),
+                     ncol=4, fontsize=7, frameon=False)
 
-    # Agent legend (agents + verifier) — right side below grid
+    # Row 2: verifier + agents
     agent_handles = [
         plt.Line2D([0], [0], marker="*", color="w", markerfacecolor="#f1c40f",
                    markersize=10, label="Verifier", markeredgecolor="#d4ac0d",
@@ -160,11 +160,11 @@ def plot_grid(
                            markersize=8, label=f"Agent {idx}",
                            markeredgecolor="white", markeredgewidth=1)
             )
-    ax.add_artist(leg1)  # keep first legend when adding second
-    ax.legend(handles=agent_handles, loc="upper right", bbox_to_anchor=(1.0, -0.08),
-              ncol=len(agent_handles), fontsize=7, frameon=False, title="Agents", title_fontsize=7)
+    ax.add_artist(leg1)
+    ax.legend(handles=agent_handles, loc="upper center", bbox_to_anchor=(0.5, -0.14),
+              ncol=len(agent_handles), fontsize=7, frameon=False)
 
-    fig.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.16)
+    fig.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.22)
     return fig
 
 
