@@ -49,13 +49,16 @@ installing the dependencies listed in `requirements.txt`.
 
 from __future__ import annotations
 
+import json
 import math
+import os
 import random
+import statistics
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass
 from typing import List, Optional, TypedDict, Tuple
 
+import anthropic
 from langgraph.graph import END, START, StateGraph
 
 
@@ -82,11 +85,17 @@ class AppState(TypedDict):
     start_time: Optional[float]
     end_time: Optional[float]
     pickup_agents: int       # number of concurrent pickup agents
+    supervisor_reasoning: Optional[str]  # natural language explanation from the supervisor
     result: Optional[str]    # textual report from the verifier
 
 
 SUITS = ["hearts", "diamonds", "clubs", "spades"]
 RANKS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
+
+# Simulated travel cost: seconds per unit of distance.  An agent moving across
+# the full diagonal of the 10x10 grid (~14.14 units) would spend ~0.07s.  This
+# makes parallelism meaningful because total travel time dominates process overhead.
+TRAVEL_COST_PER_UNIT = 0.005
 
 
 def scatter_node(state: AppState) -> AppState:
@@ -112,6 +121,137 @@ def scatter_node(state: AppState) -> AppState:
     # update state
     state["cards"] = cards
     state["phase"] = "pickup"
+    return state
+
+
+def _analyze_scatter(cards: List[Card]) -> dict:
+    """Compute spatial metrics about the card distribution.
+
+    Returns a dictionary with metrics the supervisor LLM uses to decide
+    how many pickup agents to deploy.
+    """
+    xs = [c["x"] for c in cards]
+    ys = [c["y"] for c in cards]
+
+    # Card counts per quadrant
+    quadrants = [0, 0, 0, 0]  # Q0: x<5,y<5  Q1: x>=5,y<5  Q2: x<5,y>=5  Q3: x>=5,y>=5
+    for c in cards:
+        left = c["x"] < 5.0
+        lower = c["y"] < 5.0
+        if left and lower:
+            quadrants[0] += 1
+        elif not left and lower:
+            quadrants[1] += 1
+        elif left and not lower:
+            quadrants[2] += 1
+        else:
+            quadrants[3] += 1
+
+    # Left/right split
+    left_count = quadrants[0] + quadrants[2]
+    right_count = quadrants[1] + quadrants[3]
+
+    # Spatial spread
+    std_x = statistics.stdev(xs)
+    std_y = statistics.stdev(ys)
+
+    # Average nearest-neighbor distance
+    nn_distances = []
+    for i, c in enumerate(cards):
+        min_dist = float("inf")
+        for j, other in enumerate(cards):
+            if i == j:
+                continue
+            d = math.hypot(c["x"] - other["x"], c["y"] - other["y"])
+            if d < min_dist:
+                min_dist = d
+        nn_distances.append(min_dist)
+    avg_nn_dist = statistics.mean(nn_distances)
+
+    # Balance ratio: min quadrant count / max quadrant count
+    q_min = min(quadrants)
+    q_max = max(quadrants)
+    balance_ratio = q_min / q_max if q_max > 0 else 0.0
+
+    return {
+        "total_cards": len(cards),
+        "quadrant_counts": {
+            "Q0_bottom_left": quadrants[0],
+            "Q1_bottom_right": quadrants[1],
+            "Q2_top_left": quadrants[2],
+            "Q3_top_right": quadrants[3],
+        },
+        "left_right_split": {"left": left_count, "right": right_count},
+        "spatial_spread": {"std_x": round(std_x, 3), "std_y": round(std_y, 3)},
+        "avg_nearest_neighbor_distance": round(avg_nn_dist, 3),
+        "quadrant_balance_ratio": round(balance_ratio, 3),
+    }
+
+
+SUPERVISOR_SYSTEM_PROMPT = """\
+You are a supervisor agent in a 52 Card Pickup simulation. Your job is to \
+decide how many pickup agents to deploy (1, 2, or 4) based on the spatial \
+distribution of cards on a 10x10 grid.
+
+Each agent starts at (0, 0) and picks up cards by traveling to the nearest \
+unpicked card in its assigned region. Travel takes real time proportional to \
+distance (0.005 seconds per unit). With multiple agents, each agent only \
+covers its own region and agents run in parallel:
+- 2 agents: grid split into left (x<5) and right (x>=5) halves.
+- 4 agents: grid split into four quadrants.
+
+Guidelines:
+- 1 agent: best when cards are tightly clustered near the origin or in one area.
+- 2 agents: good when cards are spread across the grid with a roughly even \
+left/right split. Saves travel time by halving each agent's territory.
+- 4 agents: good when cards are spread evenly across all four quadrants. \
+Each agent covers a smaller area, reducing total travel significantly.
+
+More agents add a small fixed overhead (~20ms for process spawning), but the \
+travel time savings from shorter distances within each region usually outweigh \
+this when cards are spread out.
+
+Respond with ONLY a JSON object (no markdown, no extra text):
+{"agents": <1|2|4>, "reasoning": "<one or two sentences explaining your choice>"}
+"""
+
+
+def supervisor_node(state: AppState) -> AppState:
+    """LLM-powered supervisor that decides how many pickup agents to deploy.
+
+    Analyzes the scatter pattern and calls Claude to make a strategic decision
+    about resource allocation.  Falls back to 2 agents if the API call fails.
+    """
+    cards = state["cards"]
+    metrics = _analyze_scatter(cards)
+
+    user_message = (
+        "Here is the spatial analysis of the current card scatter:\n\n"
+        + json.dumps(metrics, indent=2)
+        + "\n\nHow many pickup agents should I deploy?"
+    )
+
+    try:
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=200,
+            system=SUPERVISOR_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_message}],
+        )
+        reply = response.content[0].text.strip()
+        decision = json.loads(reply)
+        num_agents = int(decision["agents"])
+        reasoning = decision.get("reasoning", "No reasoning provided.")
+        if num_agents not in (1, 2, 4):
+            reasoning = f"LLM suggested {num_agents} agents (invalid). Falling back to 2. Original reasoning: {reasoning}"
+            num_agents = 2
+    except Exception as e:
+        num_agents = 2
+        reasoning = f"Supervisor API call failed ({type(e).__name__}: {e}). Falling back to 2 agents."
+
+    state["pickup_agents"] = num_agents
+    state["supervisor_reasoning"] = reasoning
     return state
 
 
@@ -181,6 +321,8 @@ def _pickup_region(args: Tuple[int, List[Tuple[int, float, float]], str]) -> Lis
                 nearest_idx = idx
                 nearest_pos = (card_index, x, y)
         assert nearest_idx is not None and nearest_pos is not None
+        # Simulate physical travel time proportional to distance
+        time.sleep(nearest_dist * TRAVEL_COST_PER_UNIT)
         # record the card index and update current position
         pickup_order.append(nearest_pos[0])
         current_x, current_y = nearest_pos[1], nearest_pos[2]
@@ -291,24 +433,57 @@ def verify_node(state: AppState) -> AppState:
     return state
 
 
-def build_graph() -> StateGraph:
-    """Assemble and compile the LangGraph for the card pickup simulation."""
+def build_graph(with_supervisor: bool = False) -> StateGraph:
+    """Assemble and compile the LangGraph for the card pickup simulation.
+
+    When *with_supervisor* is True the graph includes an LLM-powered supervisor
+    node between scatter and timer_start that decides how many pickup agents to
+    deploy.  Otherwise the graph is the same deterministic Phase 1 graph.
+    """
     builder: StateGraph = StateGraph(AppState)
     # register nodes
     builder.add_node("scatter", scatter_node)
+    if with_supervisor:
+        builder.add_node("supervisor", supervisor_node)
     builder.add_node("timer_start", timer_start_node)
     builder.add_node("pickup", pickup_node)
     builder.add_node("timer_stop", timer_stop_node)
     builder.add_node("verify", verify_node)
-    # define edges: START → scatter → timer_start → pickup → timer_stop → verify → END
+    # define edges
     builder.add_edge(START, "scatter")
-    builder.add_edge("scatter", "timer_start")
+    if with_supervisor:
+        builder.add_edge("scatter", "supervisor")
+        builder.add_edge("supervisor", "timer_start")
+    else:
+        builder.add_edge("scatter", "timer_start")
     builder.add_edge("timer_start", "pickup")
     builder.add_edge("pickup", "timer_stop")
     builder.add_edge("timer_stop", "verify")
     builder.add_edge("verify", END)
     # compile into a runnable graph
     return builder.compile()
+
+
+def _make_initial_state(num_agents: int = 1) -> AppState:
+    """Create a fresh initial state for a simulation run."""
+    return {
+        "cards": [],
+        "phase": "scatter",
+        "start_time": None,
+        "end_time": None,
+        "pickup_agents": num_agents,
+        "supervisor_reasoning": None,
+        "result": None,
+    }
+
+
+def _extract_elapsed(final_state: AppState) -> float:
+    """Compute elapsed pickup time from a completed state."""
+    start = final_state["start_time"]
+    end = final_state["end_time"]
+    if start is not None and end is not None:
+        return end - start
+    return float("nan")
 
 
 def run_trials(num_agents: int, trials: int = 10) -> Tuple[List[float], int]:
@@ -321,35 +496,73 @@ def run_trials(num_agents: int, trials: int = 10) -> Tuple[List[float], int]:
     """
     times: List[float] = []
     passes = 0
-    graph = build_graph()
+    graph = build_graph(with_supervisor=False)
     for i in range(trials):
-        # vary the seed for reproducibility across runs; first run uses 42
         seed = 42 + i
         random.seed(seed)
-        initial_state: AppState = {
-            "cards": [],
-            "phase": "scatter",
-            "start_time": None,
-            "end_time": None,
-            "pickup_agents": num_agents,
-            "result": None,
-        }
-        final_state = graph.invoke(initial_state)
-        start = final_state["start_time"]
-        end = final_state["end_time"]
-        # compute elapsed time; guard against missing values
-        if start is not None and end is not None:
-            elapsed = end - start
-        else:
-            elapsed = float("nan")
-        times.append(elapsed)
+        final_state = graph.invoke(_make_initial_state(num_agents))
+        times.append(_extract_elapsed(final_state))
         if final_state.get("result", "").startswith("PASS"):
             passes += 1
     return times, passes
 
 
+def run_supervisor_comparison(trials: int = 5) -> None:
+    """Run the supervisor experiment and compare against brute-force configs.
+
+    For each trial (with a fixed seed), the supervisor picks an agent count,
+    then we also run all three brute-force configurations with the same seed
+    to see which was actually fastest.
+    """
+    supervisor_graph = build_graph(with_supervisor=True)
+    brute_graph = build_graph(with_supervisor=False)
+
+    print("\n=== Phase 2: Supervisor vs. Brute-Force Comparison ===\n")
+    header = ["Trial", "Seed", "Supervisor Choice", "Supervisor Time (s)",
+              "Best Brute-Force", "Best BF Time (s)", "Match?"]
+    print("| " + " | ".join(header) + " |")
+    print("|" + "--------|" * len(header))
+
+    matches = 0
+    for i in range(trials):
+        seed = 42 + i
+
+        # --- Supervisor run ---
+        random.seed(seed)
+        sup_state = supervisor_graph.invoke(_make_initial_state(num_agents=1))
+        sup_elapsed = _extract_elapsed(sup_state)
+        sup_agents = sup_state["pickup_agents"]
+        sup_reasoning = sup_state.get("supervisor_reasoning", "")
+        sup_passed = sup_state.get("result", "").startswith("PASS")
+
+        # --- Brute-force runs (same seed each time) ---
+        bf_results: List[Tuple[int, float, bool]] = []
+        for n in (1, 2, 4):
+            random.seed(seed)
+            bf_state = brute_graph.invoke(_make_initial_state(n))
+            bf_elapsed = _extract_elapsed(bf_state)
+            bf_passed = bf_state.get("result", "").startswith("PASS")
+            bf_results.append((n, bf_elapsed, bf_passed))
+
+        best_bf = min(bf_results, key=lambda r: r[1])
+        matched = sup_agents == best_bf[0]
+        if matched:
+            matches += 1
+
+        print(
+            f"| {i+1} | {seed} | {sup_agents} agents | {sup_elapsed:.4f} "
+            f"| {best_bf[0]} agents | {best_bf[1]:.4f} "
+            f"| {'Yes' if matched else 'No'} |"
+        )
+        print(f"  Reasoning: {sup_reasoning}")
+        if not sup_passed:
+            print(f"  WARNING: Supervisor run verifier did not pass!")
+
+    print(f"\nSupervisor matched optimal: {matches}/{trials}")
+
+
 def print_summary(results: List[Tuple[int, List[float], int]]) -> None:
-    """Pretty‑print a summary table for the scaling experiment."""
+    """Pretty-print a summary table for the scaling experiment."""
     header = ["Agents", "Avg Time (s)", "Best (s)", "Worst (s)", "Verifier"]
     print("| " + " | ".join(header) + " |")
     print("|" + "--------|" * len(header))
@@ -367,13 +580,21 @@ def print_summary(results: List[Tuple[int, List[float], int]]) -> None:
 
 
 def main() -> None:
-    """Run the scaling experiment and display results."""
+    """Run the Phase 1 scaling experiment and the Phase 2 supervisor comparison."""
+    # Phase 1: brute-force scaling experiment
+    print("=== Phase 1: Brute-Force Scaling Experiment ===\n")
     configurations = [1, 2, 4]
     summary_results: List[Tuple[int, List[float], int]] = []
     for num_agents in configurations:
         times, passes = run_trials(num_agents)
         summary_results.append((num_agents, times, passes))
     print_summary(summary_results)
+
+    # Phase 2: supervisor comparison
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        run_supervisor_comparison(trials=5)
+    else:
+        print("\n=== Phase 2: Skipped (ANTHROPIC_API_KEY not set) ===")
 
 
 if __name__ == "__main__":
