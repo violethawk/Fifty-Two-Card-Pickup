@@ -147,10 +147,10 @@ def plot_grid(
                    markersize=10, label="Verifier", markeredgecolor="#d4ac0d",
                    markeredgewidth=0.5)
     )
-    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.02),
+    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.08),
               ncol=5, fontsize=7, frameon=False)
 
-    fig.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.12)
+    fig.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.16)
     return fig
 
 
