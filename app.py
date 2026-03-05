@@ -575,9 +575,9 @@ with tab1:
                              f"| {d['delivery_dist']:.1f} | {total:.1f} |\n")
             stats_placeholder.markdown(stats_md)
 
-            # Final log
-            with log_placeholder.expander("Event Log", expanded=False):
-                st.markdown("\n".join(event_log_lines[-20:]))
+            # Final log — show all events
+            with log_placeholder.expander(f"Event Log ({len(event_log_lines)} events)", expanded=False):
+                st.markdown("\n".join(event_log_lines))
 
         # Show initial grid
         if not run_btn and not replay_btn:
