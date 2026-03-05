@@ -1,10 +1,18 @@
 # 52 Card Pickup — Multi-Agent Simulation
 
+[![CI](https://github.com/violethawk/Fifty-Two-Card-Pickup/actions/workflows/ci.yml/badge.svg)](https://github.com/violethawk/Fifty-Two-Card-Pickup/actions/workflows/ci.yml)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 The canonical "hello world" for multi-agent LLM systems. Simple enough to understand in 5 minutes, deep enough to teach every concept that matters.
 
 52 playing cards are scattered on a 10x10 grid. Agents pick them up. The project progresses through five phases, each adding one layer of complexity — from pure Python functions to LLM-powered agents with conflict resolution, observability, and a plugin architecture.
 
 Built with [LangGraph](https://github.com/langchain-ai/langgraph) and [Claude](https://www.anthropic.com/claude).
+
+## Architecture
+
+![LangGraph Pipeline Architecture](images/architecture.png)
 
 ## Quick Start
 
@@ -25,6 +33,35 @@ python card_pickup.py --benchmark
 export ANTHROPIC_API_KEY=your-key-here
 python card_pickup.py
 ```
+
+## Sample Output
+
+### Phase 1 — Scaling Experiment
+
+```
+=== Phase 1: Brute-Force Scaling Experiment ===
+
+| Agents | Avg Time (s) | Best (s) | Worst (s) | Verifier |
+|--------|--------|--------|--------|--------|
+| 1 | 0.3375 | 0.2933 | 0.3967 | 10/10 ✓ |
+| 2 | 0.2006 | 0.1771 | 0.2337 | 10/10 ✓ |
+| 4 | 0.1402 | 0.1181 | 0.1774 | 10/10 ✓ |
+```
+
+### Phase 2 — Supervisor Decision
+
+```
+| Trial | Supervisor Choice | Supervisor Time | Best Brute-Force | Match? |
+|-------|-------------------|-----------------|------------------|--------|
+| 1     | 4 agents          | 0.1556s         | 4 agents         | Yes    |
+  Reasoning: Cards are very evenly distributed across all four quadrants
+  (13-14 cards each) with a high balance ratio of 0.857, making 4 agents
+  optimal to minimize travel distances within each quadrant.
+```
+
+### Phase 4 — Live TUI Dashboard
+
+![TUI Dashboard](images/dashboard.png)
 
 ## The Five Phases
 
@@ -69,21 +106,6 @@ Benchmark suite with 6 scatter patterns. Plugin architecture for swapping LLM pr
 | Supervisor | 2 | LLM decides how many pickup agents to deploy |
 | LLM Pickup | 3 | LLM-powered agents with planning and conflict resolution |
 
-## CLI Reference
-
-```
-python card_pickup.py [options]
-
-Options:
-  --phase {1,2,3}        Run only the specified phase (default: all)
-  --benchmark            Run benchmark suite across all scatter patterns
-  --dashboard            Enable live terminal TUI dashboard
-  --save-log             Save event logs to JSON files
-  --replay FILE          Replay a saved event log through the dashboard
-  --strategy {greedy,llm}  Pickup strategy plugin (default: greedy)
-  --provider {anthropic,mock}  LLM provider plugin (default: anthropic)
-```
-
 ## Benchmark Patterns
 
 ![Benchmark Scatter Patterns](images/patterns_overview.png)
@@ -99,6 +121,21 @@ Options:
 
 Run with `python card_pickup.py --benchmark`. Generate visualizations with `python visualize.py`.
 
+## CLI Reference
+
+```
+python card_pickup.py [options]
+
+Options:
+  --phase {1,2,3}        Run only the specified phase (default: all)
+  --benchmark            Run benchmark suite across all scatter patterns
+  --dashboard            Enable live terminal TUI dashboard
+  --save-log             Save event logs to JSON files
+  --replay FILE          Replay a saved event log through the dashboard
+  --strategy {greedy,llm}  Pickup strategy plugin (default: greedy)
+  --provider {anthropic,mock}  LLM provider plugin (default: anthropic)
+```
+
 ## Project Structure
 
 ```
@@ -108,7 +145,7 @@ benchmarks.py           Scatter patterns and benchmark runner
 plugins.py              LLM provider and pickup strategy interfaces
 visualize.py            Generate PNG visualizations of scatter patterns
 tests/                  Unit tests (35 tests, no API key needed)
-images/                 Generated scatter pattern visualizations
+images/                 Generated scatter pattern and architecture diagrams
 prompts/                Tier 2 implementation prompts for each phase
 docs/
   tutorial_phase_1.md   Tutorial: deterministic agents
@@ -119,13 +156,15 @@ docs/
   add_your_own_agent.md Step-by-step guide to adding a new agent
   blog_post.md          "52 Card Pickup: The Multi-Agent Hello World"
 52_Card_Pickup_Roadmap.md  Product roadmap (Phases 0-5)
-requirements.txt        Dependencies: langgraph, anthropic
+requirements.txt        Dependencies: langgraph, anthropic, matplotlib, pytest
 ```
 
 ## Dependencies
 
 - **langgraph** — state graph orchestration
 - **anthropic** — Claude API for supervisor and LLM agents
+- **matplotlib** — scatter pattern visualizations
+- **pytest** — unit tests
 - Python 3.11+ stdlib (`curses`, `concurrent.futures`, `argparse`)
 
 ## Extending the Project
@@ -140,4 +179,4 @@ requirements.txt        Dependencies: langgraph, anthropic
 
 ## License
 
-This project is provided for educational purposes. Feel free to use it as a starting point for your own explorations into LangGraph and multi-agent workflows.
+[MIT](LICENSE)
