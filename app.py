@@ -438,17 +438,18 @@ with tab1:
 
         num_agents = st.select_slider("Pickup agents", options=[1, 2, 4], value=2)
 
+        def _randomize_seed():
+            st.session_state["seed_input"] = random.randint(0, 9999)
+
         seed_col1, seed_col2 = st.columns([3, 1])
+        with seed_col2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.button("\U0001f3b2", help="Randomize seed", on_click=_randomize_seed)
         with seed_col1:
             if "seed_input" not in st.session_state:
                 st.session_state["seed_input"] = 42
             seed = st.number_input("Random seed", min_value=0, max_value=9999,
                                    key="seed_input")
-        with seed_col2:
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("\U0001f3b2", help="Randomize seed"):
-                st.session_state["seed_input"] = random.randint(0, 9999)
-                st.rerun()
 
         speed = st.slider("Animation speed", min_value=1, max_value=4, value=2,
                           help="Cards picked per frame")
