@@ -63,6 +63,7 @@ def plot_grid(
     title: str = "Card Grid",
     show_regions: int = 0,
     show_verifier: bool = True,
+    trails: Dict[str, List[Tuple[float, float]]] | None = None,
 ) -> plt.Figure:
     """Render the 10x10 grid with cards and optional agent positions."""
     fig, ax = plt.subplots(figsize=(4, 4), dpi=80)
@@ -79,6 +80,16 @@ def plot_grid(
             ax.fill_between([x0, x1], y0, y1, alpha=0.05, color=AGENT_COLORS[i])
         ax.axvline(5, color="#cccccc", linestyle="--", linewidth=1)
         ax.axhline(5, color="#cccccc", linestyle="--", linewidth=1)
+
+    # Agent trails
+    if trails:
+        for aid, trail in trails.items():
+            if len(trail) > 1:
+                idx = int(aid.split("_")[1]) if "_" in aid else 0
+                color = AGENT_COLORS[idx % len(AGENT_COLORS)]
+                xs = [p[0] for p in trail]
+                ys = [p[1] for p in trail]
+                ax.plot(xs, ys, color=color, alpha=0.25, linewidth=1.2, zorder=1)
 
     # Cards
     unpicked = [c for c in cards if not c["picked_up"]]
@@ -149,9 +160,9 @@ def plot_benchmark_results(results: dict) -> plt.Figure:
 
     for i, n in enumerate(configs):
         times = [results[p][n] for p in patterns]
-        bars = ax.bar([xi + i * width for xi in x], times, width,
-                      label=f"{n} agent{'s' if n > 1 else ''}",
-                      color=AGENT_COLORS[i], alpha=0.85)
+        ax.bar([xi + i * width for xi in x], times, width,
+               label=f"{n} agent{'s' if n > 1 else ''}",
+               color=AGENT_COLORS[i], alpha=0.85)
 
     ax.set_xlabel("Scatter Pattern")
     ax.set_ylabel("Time (seconds)")
@@ -160,6 +171,63 @@ def plot_benchmark_results(results: dict) -> plt.Figure:
     ax.set_xticklabels([p.replace("_", "\n") for p in patterns], fontsize=9)
     ax.legend()
     ax.grid(axis="y", alpha=0.2)
+    plt.tight_layout()
+    return fig
+
+
+def plot_compare(cards: List[Card], configs: List[int]) -> plt.Figure:
+    """Side-by-side comparison of different agent counts on the same pattern."""
+    n_configs = len(configs)
+    fig, axes = plt.subplots(1, n_configs, figsize=(4 * n_configs, 4), dpi=80)
+    if n_configs == 1:
+        axes = [axes]
+
+    for ax, n in zip(axes, configs):
+        steps = simulate_pickup_steps([dict(c) for c in cards], n)
+        final = steps[-1] if steps else None
+
+        # Compute stats
+        agent_stats = {}
+        for s in steps:
+            for evt in s.get("round_events", []):
+                aid = evt["agent"]
+                if aid not in agent_stats:
+                    agent_stats[aid] = {"cards": 0, "total_dist": 0.0}
+                agent_stats[aid]["total_dist"] += evt["distance"]
+                if evt["phase"] == "pickup":
+                    agent_stats[aid]["cards"] += 1
+
+        total_dist = sum(d["total_dist"] for d in agent_stats.values())
+
+        if final:
+            for suit, color in SUIT_COLORS.items():
+                sc = [c for c in final["cards"] if c["suit"] == suit]
+                ax.scatter([c["x"] for c in sc], [c["y"] for c in sc],
+                           c=color, marker=SUIT_MARKERS[suit], s=40, alpha=0.3,
+                           edgecolors="white", linewidths=0.3)
+
+            # Draw trails
+            trails = _build_trails(steps)
+            for aid, trail in trails.items():
+                if len(trail) > 1:
+                    idx = int(aid.split("_")[1]) if "_" in aid else 0
+                    c = AGENT_COLORS[idx % len(AGENT_COLORS)]
+                    ax.plot([p[0] for p in trail], [p[1] for p in trail],
+                            color=c, alpha=0.4, linewidth=1.5)
+
+        from card_pickup import VERIFIER_X, VERIFIER_Y
+        ax.plot(VERIFIER_X, VERIFIER_Y, "*", color="#f1c40f", markersize=14,
+                markeredgecolor="#d4ac0d", markeredgewidth=1.2, zorder=4)
+
+        ax.set_xlim(-0.3, 10.3)
+        ax.set_ylim(-0.3, 10.3)
+        ax.set_aspect("equal")
+        ax.set_title(f"{n} Agent{'s' if n > 1 else ''}\nDist: {total_dist:.1f} | Steps: {len(steps)}",
+                      fontsize=11, fontweight="bold")
+        ax.grid(True, alpha=0.15, linestyle="--")
+        ax.set_xticks(range(11))
+        ax.set_yticks(range(11))
+
     plt.tight_layout()
     return fig
 
@@ -272,7 +340,6 @@ def simulate_pickup_steps(
             picked_count = sum(1 for c in cards if c["picked_up"])
             any_delivering = any(agent_state[a] in ("delivering", "done") for a in agent_ids)
             phase = "delivery" if any_delivering and picked_count == 52 else "pickup"
-            # Use first event for card/agent label
             primary = round_events[0]
             steps.append({
                 "cards": [dict(c) for c in cards],
@@ -289,6 +356,19 @@ def simulate_pickup_steps(
     return steps
 
 
+def _build_trails(steps: List[Dict]) -> Dict[str, List[Tuple[float, float]]]:
+    """Extract agent movement trails from step history."""
+    trails: Dict[str, List[Tuple[float, float]]] = {}
+    for step in steps:
+        for aid, pos in step["positions"].items():
+            if aid not in trails:
+                trails[aid] = []
+            # Only add if position changed
+            if not trails[aid] or trails[aid][-1] != pos:
+                trails[aid].append(pos)
+    return trails
+
+
 def run_benchmark_fast() -> dict:
     """Run benchmarks without travel sleep for web responsiveness."""
     results = {}
@@ -296,14 +376,6 @@ def run_benchmark_fast() -> dict:
         cards = pattern_fn()
         results[name] = {}
         for n in [1, 2, 4]:
-            # Time the pickup (no sleep)
-            work_cards = [dict(c) for c in cards]
-            steps = simulate_pickup_steps(work_cards, n)
-            # Measure by total distance as proxy
-            total_dist = sum(s["distance"] for s in steps)
-            # Actually time it
-            start = time.perf_counter()
-            graph = build_graph(with_supervisor=False, llm_pickup=False)
             state = _make_initial_state(n)
             state["cards"] = [dict(c) for c in cards]
             state["phase"] = "pickup"
@@ -338,14 +410,16 @@ def run_benchmark_fast() -> dict:
 
 st.set_page_config(
     page_title="52 Card Pickup",
-    page_icon="🃏",
+    page_icon="\U0001f0cf",
     layout="wide",
 )
 
-st.title("🃏 52 Card Pickup — Multi-Agent Simulation")
+st.title("\U0001f0cf 52 Card Pickup — Multi-Agent Simulation")
 st.markdown("*The canonical hello world for multi-agent LLM systems*")
 
-tab1, tab2, tab3 = st.tabs(["Interactive Simulation", "Benchmark Suite", "Pattern Gallery"])
+tab1, tab2, tab3, tab4 = st.tabs([
+    "Interactive Simulation", "Compare Agents", "Benchmark Suite", "Pattern Gallery",
+])
 
 # ---- Tab 1: Interactive Simulation ----
 with tab1:
@@ -361,87 +435,93 @@ with tab1:
             pattern_name = None
 
         num_agents = st.select_slider("Pickup agents", options=[1, 2, 4], value=2)
-        seed = st.number_input("Random seed", value=42, min_value=0, max_value=9999)
+
+        seed_col1, seed_col2 = st.columns([3, 1])
+        with seed_col1:
+            seed = st.number_input("Random seed", value=42, min_value=0, max_value=9999)
+        with seed_col2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("\U0001f3b2", help="Randomize seed"):
+                seed = random.randint(0, 9999)
+                st.session_state["seed_value"] = seed
+                st.rerun()
+        # Apply randomized seed if set
+        if "seed_value" in st.session_state:
+            seed = st.session_state.pop("seed_value")
+
         speed = st.slider("Animation speed", min_value=1, max_value=4, value=2,
                           help="Cards picked per frame")
+        show_trails = st.checkbox("Show agent trails", value=True)
 
-        run_btn = st.button("Run Simulation", type="primary")
+        btn_col1, btn_col2 = st.columns(2)
+        with btn_col1:
+            run_btn = st.button("Run Simulation", type="primary")
+        with btn_col2:
+            replay_btn = st.button("Replay",
+                                   disabled="sim_steps" not in st.session_state)
 
     with col_viz:
         viz_placeholder = st.empty()
+        progress_placeholder = st.empty()
         stats_placeholder = st.empty()
         log_placeholder = st.empty()
 
-        # Generate initial cards for display
-        if "cards" not in st.session_state:
-            random.seed(seed)
-            state = _make_initial_state(num_agents)
-            state = scatter_node(state)
-            st.session_state.cards = state["cards"]
-            st.session_state.steps = None
-
-        # Show initial grid or pattern
-        if not run_btn:
+        def _get_cards():
             if source == "Benchmark pattern" and pattern_name:
-                display_cards = PATTERNS[pattern_name]()
+                return PATTERNS[pattern_name]()
             else:
                 random.seed(seed)
                 state = _make_initial_state(num_agents)
                 state = scatter_node(state)
-                display_cards = state["cards"]
+                return state["cards"]
 
-            fig = plot_grid(display_cards, title="Ready to run", show_regions=num_agents)
-            viz_placeholder.pyplot(fig, width="content")
-            plt.close(fig)
-
-        # Run simulation
-        if run_btn:
-            if source == "Benchmark pattern" and pattern_name:
-                cards = PATTERNS[pattern_name]()
-            else:
-                random.seed(seed)
-                state = _make_initial_state(num_agents)
-                state = scatter_node(state)
-                cards = state["cards"]
-
-            steps = simulate_pickup_steps(cards, num_agents)
-
-            # Animate
-            progress_bar = st.progress(0, text="Picking up cards...")
+        def _animate(steps, speed, num_agents, show_trails):
+            progress_bar = progress_placeholder.progress(0, text="Picking up cards...")
             event_log_lines = []
+            trails = {} if show_trails else None
 
             for i in range(0, len(steps), speed):
                 step = steps[min(i + speed - 1, len(steps) - 1)]
                 phase = step.get("phase", "pickup")
+                picked = step["picked"]
+                delivered = step.get("delivered", 0)
 
                 if phase == "pickup":
-                    title = f"Fan Out — {step['picked']}/52 cards picked"
+                    title = f"Fan Out — {picked}/52 cards picked"
                 else:
-                    delivered = step.get("delivered", 0)
                     title = f"Converge — {delivered}/52 cards delivered to verifier"
+
+                # Build trails up to this point
+                if show_trails:
+                    for j in range(0, min(i + speed, len(steps))):
+                        s = steps[j]
+                        for aid, pos in s["positions"].items():
+                            if aid not in trails:
+                                trails[aid] = []
+                            if not trails[aid] or trails[aid][-1] != pos:
+                                trails[aid].append(pos)
 
                 fig = plot_grid(
                     step["cards"],
                     agent_positions=step["positions"],
                     title=title,
                     show_regions=num_agents,
+                    trails=trails,
                 )
                 viz_placeholder.pyplot(fig, width="content")
                 plt.close(fig)
 
-                if phase == "pickup":
-                    progress_bar.progress(
-                        step["picked"] / 52,
-                        text=f"Picking up: {step['picked']}/52"
-                    )
+                # Progress bar — track both pickup and delivery
+                if picked < 52:
+                    frac = picked / 52 * 0.7  # pickup is 0-70%
+                    progress_bar.progress(max(frac, 0.01),
+                                          text=f"Picking up: {picked}/52")
                 else:
-                    delivered = step.get("delivered", 0)
-                    progress_bar.progress(
-                        max(step["picked"] / 52, 0.01),
-                        text=f"Delivering: {delivered}/52 cards to verifier"
-                    )
+                    frac = 0.7 + (delivered / 52) * 0.3  # delivery is 70-100%
+                    progress_bar.progress(min(frac, 1.0),
+                                          text=f"Delivering: {delivered}/52 cards to verifier")
 
-                # Accumulate log — iterate all round_events for each step
+                # Accumulate and display log live
                 for j in range(i, min(i + speed, len(steps))):
                     s = steps[j]
                     for evt in s.get("round_events", []):
@@ -453,6 +533,10 @@ with tab1:
                             event_log_lines.append(
                                 f"`{evt['agent']}` picked up **{evt['card']}** (dist: {evt['distance']})"
                             )
+
+                # Update log live (show last 12 lines)
+                with log_placeholder.expander("Event Log", expanded=False):
+                    st.markdown("\n".join(event_log_lines[-12:]))
 
                 time.sleep(0.05)
 
@@ -481,13 +565,89 @@ with tab1:
                              f"| {d['delivery_dist']:.1f} | {total:.1f} |\n")
             stats_placeholder.markdown(stats_md)
 
-            # Show last N events
+            # Final log
             with log_placeholder.expander("Event Log", expanded=False):
                 st.markdown("\n".join(event_log_lines[-20:]))
 
+        # Show initial grid
+        if not run_btn and not replay_btn:
+            display_cards = _get_cards()
+            fig = plot_grid(display_cards, title="Ready to run", show_regions=num_agents)
+            viz_placeholder.pyplot(fig, width="content")
+            plt.close(fig)
 
-# ---- Tab 2: Benchmark Suite ----
+        # Run simulation
+        if run_btn:
+            cards = _get_cards()
+            steps = simulate_pickup_steps(cards, num_agents)
+            st.session_state["sim_steps"] = steps
+            st.session_state["sim_agents"] = num_agents
+            st.session_state["sim_show_trails"] = show_trails
+            _animate(steps, speed, num_agents, show_trails)
+
+        # Replay cached simulation
+        if replay_btn and "sim_steps" in st.session_state:
+            steps = st.session_state["sim_steps"]
+            n = st.session_state.get("sim_agents", num_agents)
+            trails_on = st.session_state.get("sim_show_trails", show_trails)
+            _animate(steps, speed, n, trails_on)
+
+
+# ---- Tab 2: Compare Agents ----
 with tab2:
+    st.subheader("Compare Agent Configurations")
+    st.markdown("Run the same scatter pattern with different agent counts side-by-side.")
+
+    cmp_col1, cmp_col2 = st.columns([1, 3])
+
+    with cmp_col1:
+        cmp_source = st.radio("Card source", ["Random scatter", "Benchmark pattern"],
+                              key="cmp_source")
+        if cmp_source == "Benchmark pattern":
+            cmp_pattern = st.selectbox("Pattern", list(PATTERNS.keys()), key="cmp_pattern")
+        else:
+            cmp_pattern = None
+
+        cmp_seed = st.number_input("Random seed", value=42, min_value=0, max_value=9999,
+                                   key="cmp_seed")
+        cmp_configs = st.multiselect("Agent counts to compare",
+                                     options=[1, 2, 4], default=[1, 2, 4])
+
+        cmp_run = st.button("Compare", type="primary", key="cmp_run")
+
+    with cmp_col2:
+        if cmp_run and cmp_configs:
+            if cmp_source == "Benchmark pattern" and cmp_pattern:
+                cmp_cards = PATTERNS[cmp_pattern]()
+            else:
+                random.seed(cmp_seed)
+                state = _make_initial_state(max(cmp_configs))
+                state = scatter_node(state)
+                cmp_cards = state["cards"]
+
+            with st.spinner("Running comparisons..."):
+                fig = plot_compare(cmp_cards, sorted(cmp_configs))
+            st.pyplot(fig, width="content")
+            plt.close(fig)
+
+            # Stats table
+            st.markdown("### Comparison")
+            table_md = "| Agents | Steps | Total Distance |\n"
+            table_md += "|--------|-------|----------------|\n"
+            for n in sorted(cmp_configs):
+                steps = simulate_pickup_steps([dict(c) for c in cmp_cards], n)
+                total_dist = 0.0
+                for s in steps:
+                    for evt in s.get("round_events", []):
+                        total_dist += evt["distance"]
+                table_md += f"| {n} | {len(steps)} | {total_dist:.1f} |\n"
+            st.markdown(table_md)
+        elif not cmp_run:
+            st.info("Select agent counts and click 'Compare' to see side-by-side results.")
+
+
+# ---- Tab 3: Benchmark Suite ----
+with tab3:
     st.subheader("Benchmark Suite")
     st.markdown("Run all 6 scatter patterns with 1, 2, and 4 agents.")
 
@@ -518,8 +678,8 @@ with tab2:
         st.info("Click 'Run Benchmarks' to start. No API key needed.")
 
 
-# ---- Tab 3: Pattern Gallery ----
-with tab3:
+# ---- Tab 4: Pattern Gallery ----
+with tab4:
     st.subheader("Scatter Pattern Gallery")
     st.markdown("The 6 standardized benchmark patterns. Each is fully deterministic.")
 
