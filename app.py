@@ -176,18 +176,36 @@ def plot_grid(
     unpicked = [c for c in cards if not c["picked_up"]]
     picked = [c for c in cards if c["picked_up"]]
 
-    # Draw picked cards (faded)
-    for c in picked:
-        ax.scatter(c["x"], c["y"], c=picked_color, marker="o", s=30, alpha=0.3, zorder=1)
+    # Card dimensions in data coords
+    cw, ch = 0.38, 0.52
 
-    # Draw unpicked cards (colored by suit)
+    # Draw picked cards (faded card shape)
+    for c in picked:
+        rect = mpatches.FancyBboxPatch(
+            (c["x"] - cw / 2, c["y"] - ch / 2), cw, ch,
+            boxstyle="round,pad=0.05",
+            facecolor=picked_color, edgecolor=picked_color,
+            linewidth=0.4, alpha=0.25, zorder=1)
+        ax.add_patch(rect)
+
+    # Draw unpicked cards (card background + suit symbol)
+    for c in unpicked:
+        card_bg = "#fffff0" if not DARK_MODE else "#2a2a2a"
+        card_edge = "#bbbbbb" if not DARK_MODE else "#555555"
+        rect = mpatches.FancyBboxPatch(
+            (c["x"] - cw / 2, c["y"] - ch / 2), cw, ch,
+            boxstyle="round,pad=0.05",
+            facecolor=card_bg, edgecolor=card_edge,
+            linewidth=0.6, zorder=2)
+        ax.add_patch(rect)
+
     for suit, color in SUIT_COLORS.items():
         sc = [c for c in unpicked if c["suit"] == suit]
         if sc:
             ax.scatter(
                 [c["x"] for c in sc], [c["y"] for c in sc],
-                c=color, marker=SUIT_MARKERS[suit], s=70, alpha=0.85,
-                edgecolors="white", linewidths=0.5, zorder=2,
+                c=color, marker=SUIT_MARKERS[suit], s=55, alpha=0.9,
+                edgecolors="none", zorder=3,
             )
 
     # Agent positions
@@ -310,12 +328,20 @@ def plot_compare(cards: List[Card], configs: List[int]) -> plt.Figure:
         total_dist = sum(d["total_dist"] for d in agent_stats.values())
 
         if final:
+            cw, ch = 0.38, 0.52
+            for c in final["cards"]:
+                rect = mpatches.FancyBboxPatch(
+                    (c["x"] - cw / 2, c["y"] - ch / 2), cw, ch,
+                    boxstyle="round,pad=0.05",
+                    facecolor="#eeeeee", edgecolor="#cccccc",
+                    linewidth=0.3, alpha=0.25, zorder=1)
+                ax.add_patch(rect)
             for suit, color in SUIT_COLORS.items():
                 sc = [c for c in final["cards"] if c["suit"] == suit]
                 if sc:
                     ax.scatter([c["x"] for c in sc], [c["y"] for c in sc],
-                               c=color, marker=SUIT_MARKERS[suit], s=40, alpha=0.3,
-                               edgecolors="white", linewidths=0.3, zorder=1)
+                               c=color, marker=SUIT_MARKERS[suit], s=30, alpha=0.3,
+                               edgecolors="none", zorder=1)
 
             # Draw trails
             trails = _build_trails(steps)
