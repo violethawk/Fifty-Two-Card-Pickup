@@ -14,9 +14,10 @@ state:
 * **Timer agent (start)** – records the wall–clock start time just
   before the pickup begins.
 * **Pickup agent(s)** – one or more agents that repeatedly pick up
-  cards.  Each agent starts at the origin `(0, 0)` and picks the
-  closest unpicked card in its assigned region of the grid, moves to
-  that card and marks it as collected.  Regions are assigned based on
+  cards.  Each agent originates at `(0, 0)`, travels to a deployment
+  position chosen by the supervisor, then picks the closest unpicked
+  card in its assigned region.  Deployment travel costs real time,
+  making position choice a strategic decision.  Regions are assigned based on
   the number of pickup agents (the whole grid, left/right halves or
   quadrants).  Agents run concurrently when there are multiple
   regions.
@@ -120,6 +121,7 @@ class AppState(TypedDict):
     event_log: Optional[List[dict]]  # serialized event records (Phase 4)
     result: Optional[str]    # textual report from the verifier
     verifier_position: Optional[Dict[str, float]]  # {x, y} grid position
+    deployment_positions: Optional[Dict[str, List[float]]]  # target (x,y) per agent before pickup
     cards_delivered: int     # increments as agents deliver
     deliveries: Optional[List[Dict]]  # per-agent delivery records
 
@@ -229,31 +231,66 @@ def _analyze_scatter(cards: List[Card]) -> dict:
     }
 
 
+def _compute_deployment_positions(cards: List[Card], num_agents: int) -> Dict[str, List[float]]:
+    """Compute deployment positions as centroids of each region's cards.
+
+    For the deterministic/greedy path, agents deploy to the centroid of
+    their assigned region before beginning pickup.  This minimises the
+    average distance to cards within the region.
+    """
+    if num_agents <= 1:
+        return {"agent_0": [0.0, 0.0]}
+
+    region_cards: Dict[int, List[Card]] = {i: [] for i in range(num_agents)}
+    for card in cards:
+        rid = _determine_region(card, num_agents)
+        rid = min(rid, num_agents - 1)
+        region_cards[rid].append(card)
+
+    positions: Dict[str, List[float]] = {}
+    for rid in range(num_agents):
+        rc = region_cards[rid]
+        if rc:
+            cx = sum(c["x"] for c in rc) / len(rc)
+            cy = sum(c["y"] for c in rc) / len(rc)
+        else:
+            cx, cy = 0.0, 0.0
+        positions[f"agent_{rid}"] = [round(cx, 2), round(cy, 2)]
+    return positions
+
+
 SUPERVISOR_SYSTEM_PROMPT = """\
 You are a supervisor agent in a 52 Card Pickup simulation. Your job is to \
 decide how many pickup agents to deploy (1, 2, or 4) based on the spatial \
 distribution of cards on a 10x10 grid.
 
-Each agent starts at (0, 0) and picks up cards by traveling to the nearest \
-unpicked card in its assigned region. Travel takes real time proportional to \
-distance (0.005 seconds per unit). With multiple agents, each agent only \
-covers its own region and agents run in parallel:
+All agents originate at (0, 0) but first travel to a deployment position \
+you choose before beginning pickup. This deployment travel costs real time \
+proportional to distance (0.005 seconds per unit), so choose positions wisely. \
+After reaching their deployment position, each agent picks up cards by \
+traveling to the nearest unpicked card in its assigned region. With multiple \
+agents, each agent only covers its own region and agents run in parallel:
 - 2 agents: grid split into left (x<5) and right (x>=5) halves.
 - 4 agents: grid split into four quadrants.
 
 Guidelines:
-- 1 agent: best when cards are tightly clustered near the origin or in one area.
+- 1 agent: best when cards are tightly clustered near the origin or in one area. \
+Deploy near the densest cluster.
 - 2 agents: good when cards are spread across the grid with a roughly even \
-left/right split. Saves travel time by halving each agent's territory.
+left/right split. Deploy each agent near the centroid of its region's cards.
 - 4 agents: good when cards are spread evenly across all four quadrants. \
-Each agent covers a smaller area, reducing total travel significantly.
+Deploy each agent near the centroid of its quadrant's cards.
 
 More agents add a small fixed overhead (~20ms for process spawning), but the \
 travel time savings from shorter distances within each region usually outweigh \
-this when cards are spread out.
+this when cards are spread out. Position agents to minimise wasted travel — \
+placing an agent at its region's centroid is a good baseline, but deploying \
+near the densest cluster within the region can be even better.
 
 Respond with ONLY a JSON object (no markdown, no extra text):
-{"agents": <1|2|4>, "reasoning": "<one or two sentences explaining your choice>"}
+{"agents": <1|2|4>, "deployment_positions": [[x0,y0], [x1,y1], ...], "reasoning": "<explanation>"}
+
+deployment_positions must contain one [x, y] pair per agent, coordinates in [0, 10].
 """
 
 
@@ -269,14 +306,14 @@ def supervisor_node(state: AppState) -> AppState:
     user_message = (
         "Here is the spatial analysis of the current card scatter:\n\n"
         + json.dumps(metrics, indent=2)
-        + "\n\nHow many pickup agents should I deploy?"
+        + "\n\nHow many pickup agents should I deploy and where should they start?"
     )
 
     try:
         client = anthropic.Anthropic()
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=200,
+            max_tokens=300,
             system=SUPERVISOR_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
         )
@@ -294,9 +331,28 @@ def supervisor_node(state: AppState) -> AppState:
     except Exception as e:
         num_agents = 2
         reasoning = f"Supervisor API call failed ({type(e).__name__}: {e}). Falling back to 2 agents."
+        decision = {}
 
     state["pickup_agents"] = num_agents
     state["supervisor_reasoning"] = reasoning
+
+    # Parse deployment positions from supervisor LLM response
+    dep_positions: Dict[str, List[float]] = {}
+    raw_positions = decision.get("deployment_positions", []) if isinstance(decision, dict) else []
+    if isinstance(raw_positions, list) and len(raw_positions) == num_agents:
+        for i, pos in enumerate(raw_positions):
+            if isinstance(pos, (list, tuple)) and len(pos) == 2:
+                try:
+                    x = max(0.0, min(10.0, float(pos[0])))
+                    y = max(0.0, min(10.0, float(pos[1])))
+                    dep_positions[f"agent_{i}"] = [round(x, 2), round(y, 2)]
+                except (TypeError, ValueError):
+                    pass
+    # Fallback to centroids if LLM positions are invalid/missing
+    if len(dep_positions) != num_agents:
+        dep_positions = _compute_deployment_positions(cards, num_agents)
+    state["deployment_positions"] = dep_positions
+
     return state
 
 
@@ -485,7 +541,10 @@ def llm_pickup_node(state: AppState) -> AppState:
     client = anthropic.Anthropic()
 
     agent_ids = [f"agent_{i}" for i in range(num_agents)]
-    positions: Dict[str, List[float]] = {aid: [0.0, 0.0] for aid in agent_ids}
+    dep_positions = state.get("deployment_positions") or {}
+    positions: Dict[str, List[float]] = {
+        aid: list(dep_positions.get(aid, [0.0, 0.0])) for aid in agent_ids
+    }
     intentions: Dict[str, str] = {aid: "none" for aid in agent_ids}
     strategies: Dict[str, str] = {}
 
@@ -497,6 +556,18 @@ def llm_pickup_node(state: AppState) -> AppState:
     elog = _active_event_log
     dash = _active_dashboard
     governance = GovernanceChecker(elog, agent_ids) if elog else None
+
+    # Simulate deployment travel from origin to deployment position
+    for aid in agent_ids:
+        dep = dep_positions.get(aid, [0.0, 0.0])
+        deploy_dist = math.hypot(dep[0], dep[1])
+        if deploy_dist > 0:
+            time.sleep(deploy_dist * TRAVEL_COST_PER_UNIT)
+            if elog:
+                elog.emit("deploy", agent_id=aid, data={
+                    "target": [round(dep[0], 2), round(dep[1], 2)],
+                    "distance": round(deploy_dist, 3),
+                })
 
     max_rounds = 200  # safety limit to prevent infinite loops
     round_num = 0
@@ -686,21 +757,25 @@ def _determine_region(card: Card, num_agents: int) -> int:
     return 0
 
 
-def _pickup_region(args: Tuple[int, List[Tuple[int, float, float]], str]) -> Tuple[List[int], float, float]:
+def _pickup_region(args: Tuple) -> Tuple[List[int], float, float]:
     """Internal helper executed in a separate process for one agent’s region.
 
-    The function receives a tuple `(region_id, positions, agent_id)` where
-    `positions` is a list of `(card_index, x, y)` tuples belonging to this
-    agent’s region.  It simulates picking up cards by repeatedly selecting
-    the nearest unpicked card to the agent’s current position (starting
-    from the origin) until none remain.  It returns a tuple of
-    (pickup_order, final_x, final_y) — the ordered list of card indices
-    and the agent’s final position after picking up all its cards.
+    The function receives a tuple
+    ``(region_id, positions, agent_id, deploy_x, deploy_y)`` where
+    ``positions`` is a list of ``(card_index, x, y)`` tuples belonging to
+    this agent’s region.  The agent first travels from the origin ``(0, 0)``
+    to its deployment position ``(deploy_x, deploy_y)`` (time counted), then
+    picks up cards by greedy nearest-neighbour from the deployment position.
+    Returns ``(pickup_order, final_x, final_y)``.
     """
-    _, positions, _ = args
+    _, positions, _, deploy_x, deploy_y = args
+    # Simulate travel from origin (0,0) to deployment position
+    deploy_dist = math.hypot(deploy_x, deploy_y)
+    if deploy_dist > 0:
+        time.sleep(deploy_dist * TRAVEL_COST_PER_UNIT)
     # local copy of unpicked positions; each element is (index, x, y)
     remaining = list(positions)
-    current_x, current_y = 0.0, 0.0
+    current_x, current_y = deploy_x, deploy_y
     pickup_order: List[int] = []
     while remaining:
         # find the nearest card to the current position
@@ -752,11 +827,13 @@ def pickup_node(state: AppState) -> AppState:
             # default fallback
             region_positions[0].append((idx, card["x"], card["y"]))
 
-    # Prepare arguments for each worker
-    tasks: List[Tuple[int, List[Tuple[int, float, float]], str]] = []
+    # Prepare arguments for each worker (now includes deployment position)
+    dep_positions = state.get("deployment_positions") or {}
+    tasks: List[Tuple] = []
     for region_id, positions in enumerate(region_positions):
         agent_id = f"agent_{region_id}"
-        tasks.append((region_id, positions, agent_id))
+        dep = dep_positions.get(agent_id, [0.0, 0.0])
+        tasks.append((region_id, positions, agent_id, dep[0], dep[1]))
 
     # Use a ProcessPoolExecutor only if multiple agents are requested; using
     # processes circumvents Python’s GIL for CPU‑bound work.  For a single
@@ -773,16 +850,17 @@ def pickup_node(state: AppState) -> AppState:
                 pickup_results.append((region_id, order, final_x, final_y))
     else:
         # Synchronous execution for one agent or no cards
-        for region_id, positions, agent_id in tasks:
-            order, final_x, final_y = _pickup_region((region_id, positions, agent_id))
-            pickup_results.append((region_id, order, final_x, final_y))
+        for task in tasks:
+            order, final_x, final_y = _pickup_region(task)
+            pickup_results.append((task[0], order, final_x, final_y))
 
     # Mark picked cards in the main state; preserve the pick ordering per agent
     agent_final_positions: Dict[str, List[float]] = {}
     for region_id, order, final_x, final_y in pickup_results:
         agent_id = f"agent_{region_id}"
         agent_final_positions[agent_id] = [final_x, final_y]
-        prev_x, prev_y = 0.0, 0.0
+        dep = dep_positions.get(agent_id, [0.0, 0.0])
+        prev_x, prev_y = dep[0], dep[1]
         for card_idx in order:
             card = cards[card_idx]
             dist = math.hypot(card["x"] - prev_x, card["y"] - prev_y)
@@ -987,6 +1065,7 @@ def _make_initial_state(num_agents: int = 1) -> AppState:
         "pickup_end_time": None,
         "pickup_agents": num_agents,
         "supervisor_reasoning": None,
+        "deployment_positions": None,
         "agent_positions": None,
         "agent_intentions": None,
         "agent_strategies": None,

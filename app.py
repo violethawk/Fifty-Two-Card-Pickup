@@ -11,7 +11,7 @@ import base64
 import math
 import random
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 
 import matplotlib
@@ -26,6 +26,7 @@ from card_pickup import (
     RANKS,
     TRAVEL_COST_PER_UNIT,
     _card_key,
+    _compute_deployment_positions,
     _determine_region,
     _extract_elapsed,
     _greedy_nearest_card,
@@ -311,7 +312,8 @@ def plot_compare(cards: List[Card], configs: List[int]) -> plt.Figure:
 
     for ax, n in zip(axes, configs):
         _apply_plot_theme(fig, ax)
-        steps = simulate_pickup_steps([dict(c) for c in cards], n)
+        dep = _compute_deployment_positions([dict(c) for c in cards], n) if n > 1 else None
+        steps = simulate_pickup_steps([dict(c) for c in cards], n, deployment_positions=dep)
         final = steps[-1] if steps else None
 
         # Compute stats
@@ -375,13 +377,14 @@ def plot_compare(cards: List[Card], configs: List[int]) -> plt.Figure:
 # ---------------------------------------------------------------------------
 
 def simulate_pickup_steps(
-    cards: List[Card], num_agents: int
+    cards: List[Card], num_agents: int,
+    deployment_positions: Optional[Dict[str, List[float]]] = None,
 ) -> List[Dict]:
     """Run greedy pickup step-by-step, returning a list of step snapshots.
 
-    Agents start delivering to the verifier as soon as their territory is empty,
-    even while other agents are still picking up. This interleaves pickup and
-    delivery steps naturally.
+    Agents originate at (0,0), walk to their deployment positions, then pick up
+    cards.  Agents start delivering to the verifier as soon as their territory
+    is empty, even while other agents are still picking up.
     """
     from card_pickup import VERIFIER_X, VERIFIER_Y
     cards = [dict(c) for c in cards]  # deep copy
@@ -395,8 +398,46 @@ def simulate_pickup_steps(
         region_id = min(region_id, num_agents - 1)
         region_cards[f"agent_{region_id}"].append(idx)
 
+    dep_pos = deployment_positions or {}
     positions = {aid: [0.0, 0.0] for aid in agent_ids}
     agent_remaining = {aid: list(idxs) for aid, idxs in region_cards.items()}
+
+    # --- Deployment walk: agents travel from (0,0) to deployment positions ---
+    deploy_steps = 5
+    has_deployment = any(
+        math.hypot(dep_pos.get(aid, [0.0, 0.0])[0], dep_pos.get(aid, [0.0, 0.0])[1]) > 0.01
+        for aid in agent_ids
+    )
+    if has_deployment:
+        for t in range(1, deploy_steps + 1):
+            frac = t / deploy_steps
+            round_events = []
+            for aid in agent_ids:
+                target = dep_pos.get(aid, [0.0, 0.0])
+                positions[aid] = [target[0] * frac, target[1] * frac]
+                step_dist = math.hypot(target[0], target[1]) / deploy_steps
+                round_events.append({
+                    "agent": aid,
+                    "card": f"deployed at ({target[0]:.1f}, {target[1]:.1f})"
+                            if t == deploy_steps else "deploying",
+                    "distance": round(step_dist, 2),
+                    "phase": "deploy",
+                })
+            steps.append({
+                "cards": [dict(c) for c in cards],
+                "positions": {a: tuple(p) for a, p in positions.items()},
+                "picked": 0,
+                "agent": agent_ids[0],
+                "card": "deploying",
+                "distance": sum(e["distance"] for e in round_events),
+                "phase": "deploy",
+                "delivered": 0,
+                "round_events": round_events,
+            })
+        # Snap to final deployment positions
+        for aid in agent_ids:
+            target = dep_pos.get(aid, [0.0, 0.0])
+            positions[aid] = list(target)
 
     # Track agent states: "picking", "delivering", "done"
     agent_state = {aid: "picking" for aid in agent_ids}
@@ -678,7 +719,9 @@ with tab1:
                 picked = step["picked"]
                 delivered = step.get("delivered", 0)
 
-                if phase == "pickup":
+                if phase == "deploy":
+                    title = "Deploying agents to positions\u2026"
+                elif phase == "pickup":
                     title = f"Fan Out \u2014 {picked}/52 cards picked"
                 else:
                     title = f"Converge \u2014 {delivered}/52 cards delivered to verifier"
@@ -735,8 +778,10 @@ with tab1:
                         unsafe_allow_html=True,
                     )
 
-                # Progress bar — track both pickup and delivery
-                if picked < 52:
+                # Progress bar — track deploy, pickup and delivery
+                if phase == "deploy":
+                    progress_bar.progress(0.01, text="Deploying agents\u2026")
+                elif picked < 52:
                     frac = picked / 52 * 0.7  # pickup is 0-70%
                     progress_bar.progress(max(frac, 0.01),
                                           text=f"Picking up: {picked}/52")
@@ -749,7 +794,12 @@ with tab1:
                 for j in range(i, min(i + speed, len(steps))):
                     s = steps[j]
                     for evt in s.get("round_events", []):
-                        if evt["phase"] == "delivery":
+                        if evt["phase"] == "deploy":
+                            if evt["card"].startswith("deployed"):
+                                event_log_lines.append(
+                                    f"`{evt['agent']}` {evt['card']}"
+                                )
+                        elif evt["phase"] == "delivery":
                             if evt["card"].startswith("delivered"):
                                 event_log_lines.append(
                                     f"`{evt['agent']}` \u2014 {evt['card']}"
@@ -773,20 +823,24 @@ with tab1:
                 for evt in s.get("round_events", []):
                     aid = evt["agent"]
                     if aid not in agent_stats:
-                        agent_stats[aid] = {"cards": 0, "pickup_dist": 0.0, "delivery_dist": 0.0}
-                    if evt["phase"] == "delivery":
+                        agent_stats[aid] = {"cards": 0, "pickup_dist": 0.0,
+                                            "deploy_dist": 0.0, "delivery_dist": 0.0}
+                    if evt["phase"] == "deploy":
+                        agent_stats[aid]["deploy_dist"] += evt["distance"]
+                    elif evt["phase"] == "delivery":
                         agent_stats[aid]["delivery_dist"] += evt["distance"]
                     else:
                         agent_stats[aid]["cards"] += 1
                         agent_stats[aid]["pickup_dist"] += evt["distance"]
 
             stats_md = "### Results\n\n"
-            stats_md += "| Agent | Cards | Pickup Dist | Delivery Dist | Total Dist |\n"
-            stats_md += "|-------|-------|-------------|---------------|------------|\n"
+            stats_md += "| Agent | Cards | Deploy Dist | Pickup Dist | Delivery Dist | Total Dist |\n"
+            stats_md += "|-------|-------|-------------|-------------|---------------|------------|\n"
             for aid in sorted(agent_stats.keys()):
                 d = agent_stats[aid]
-                total = d["pickup_dist"] + d["delivery_dist"]
-                stats_md += (f"| {aid} | {d['cards']} | {d['pickup_dist']:.1f} "
+                total = d["deploy_dist"] + d["pickup_dist"] + d["delivery_dist"]
+                stats_md += (f"| {aid} | {d['cards']} | {d['deploy_dist']:.1f} "
+                             f"| {d['pickup_dist']:.1f} "
                              f"| {d['delivery_dist']:.1f} | {total:.1f} |\n")
             stats_placeholder.markdown(stats_md)
 
@@ -828,7 +882,8 @@ with tab1:
             cards = _get_cards()
 
             _scatter_animation(cards, num_agents)
-            steps = simulate_pickup_steps(cards, num_agents)
+            dep = _compute_deployment_positions(cards, num_agents) if num_agents > 1 else None
+            steps = simulate_pickup_steps(cards, num_agents, deployment_positions=dep)
             st.session_state["sim_steps"] = steps
             st.session_state["sim_agents"] = num_agents
             st.session_state["sim_show_trails"] = show_trails
@@ -884,7 +939,8 @@ with tab2:
             table_md = "| Agents | Steps | Total Distance |\n"
             table_md += "|--------|-------|----------------|\n"
             for n in sorted(cmp_configs):
-                steps = simulate_pickup_steps([dict(c) for c in cmp_cards], n)
+                dep = _compute_deployment_positions([dict(c) for c in cmp_cards], n) if n > 1 else None
+                steps = simulate_pickup_steps([dict(c) for c in cmp_cards], n, deployment_positions=dep)
                 total_dist = 0.0
                 for s in steps:
                     for evt in s.get("round_events", []):

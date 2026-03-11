@@ -43,6 +43,7 @@ from card_pickup._core import (  # noqa: F401
     _plan_agent_moves,
     _resolve_conflicts,
     _analyze_scatter,
+    _compute_deployment_positions,
     _determine_region,
     _pickup_region,
     _extract_elapsed,
