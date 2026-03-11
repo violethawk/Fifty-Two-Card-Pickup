@@ -80,7 +80,8 @@ The project already has benchmark patterns (uniform, clustered, diagonal, etc.) 
 - **Standardized scoring** — total distance traveled, wall-clock time, number of LLM calls, API cost. A composite score.
 - **Leaderboard patterns** — fixed seed + pattern combinations that define the benchmark suite.
 - **Strategy plugins** — a clean interface for submitting new pickup/coordination strategies and comparing them against baselines.
-- **Scaling dimensions** — vary grid size (10x10 to 100x100), card count (52 to 520), agent count. Test how strategies degrade.
+- **Grid scaling as the primary difficulty knob** — the card count is fixed at 52 (it's in the name), but grid size is the free variable. A 10x10 grid with 52 cards is dense (~1 card per 2 cells) — greedy nearest-neighbor works fine and strategy differences are small. A 100x100 grid with 52 cards is sparse — deployment position matters enormously, region assignment becomes genuinely hard, and naive strategies leave real performance on the table. Same codebase, same metaphor, just a parameter that controls how much coordination quality matters. The 10x10 grid is the teaching tool; 100x100 is where it becomes a real benchmark.
+- **Agent count scaling** — test how strategies degrade as agent count increases. More agents means more coordination overhead — at what point does adding agents stop helping?
 
 ---
 
