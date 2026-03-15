@@ -18,6 +18,7 @@ from urllib.parse import urlencode
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+from PIL import Image
 import streamlit as st
 from streamlit_image_coordinates import streamlit_image_coordinates
 
@@ -309,12 +310,12 @@ def plot_benchmark_results(results: dict) -> plt.Figure:
 # Interactive click helpers (Human-only / Agent-assist modes)
 # ---------------------------------------------------------------------------
 
-def _fig_to_png_bytes(fig: plt.Figure) -> bytes:
-    """Render a matplotlib figure to PNG bytes at its native DPI."""
+def _fig_to_image(fig: plt.Figure) -> Image.Image:
+    """Render a matplotlib figure to a PIL Image at its native DPI."""
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=fig.dpi)
     buf.seek(0)
-    return buf.read()
+    return Image.open(buf)
 
 
 def _pixel_to_grid(px: int, py: int, fig: plt.Figure, ax) -> Tuple[float, float]:
@@ -1000,9 +1001,9 @@ with tab1:
                             linewidth=0.6, alpha=0.4, zorder=2)
                         ax.add_patch(rect)
 
-                png_bytes = _fig_to_png_bytes(fig)
+                grid_image = _fig_to_image(fig)
                 coords = streamlit_image_coordinates(
-                    png_bytes, key=f"ho_grid_{click_seq}",
+                    grid_image, key=f"ho_grid_{click_seq}",
                 )
 
                 if coords is not None and game_phase == "picking":
@@ -1232,9 +1233,9 @@ with tab1:
                             linewidth=0.6, alpha=0.4, zorder=2)
                         ax.add_patch(rect)
 
-                png_bytes = _fig_to_png_bytes(fig)
+                grid_image = _fig_to_image(fig)
                 coords = streamlit_image_coordinates(
-                    png_bytes, key=f"aa_grid_{click_seq}",
+                    grid_image, key=f"aa_grid_{click_seq}",
                 )
 
                 needs_rerun = False
