@@ -986,30 +986,6 @@ with tab1:
                 game_phase = st.session_state["ho_phase"]
                 picked_count = sum(1 for c in cards if c["picked_up"])
 
-                # Process any pending click BEFORE rendering so the image
-                # reflects the updated state immediately (no double-rerun).
-                pending = st.session_state.get("ho_pending_coords")
-                if pending is not None and game_phase == "picking":
-                    st.session_state["ho_pending_coords"] = None
-                    gx, gy = _pixel_to_grid(pending["x"], pending["y"])
-
-                    if picked_count == 52 and _is_verifier_click(gx, gy):
-                        st.session_state["ho_phase"] = "done"
-                        game_phase = "done"
-                        elapsed = time.time() - st.session_state["ho_start_time"]
-                        st.session_state["ho_elapsed"] = elapsed
-                    else:
-                        card_idx = _find_clicked_card(gx, gy, cards)
-                        if card_idx is not None:
-                            cards[card_idx]["picked_up"] = True
-                            cards[card_idx]["picked_up_by"] = "human"
-                            picked_set.add(card_idx)
-                            st.session_state["ho_cards"] = cards
-                            st.session_state["ho_picked"] = picked_set
-
-                    # Recount after processing
-                    picked_count = sum(1 for c in cards if c["picked_up"])
-
                 if game_phase == "picking":
                     title = f"Pick up cards \u2014 {picked_count}/52"
                     if picked_count == 52:
@@ -1048,7 +1024,7 @@ with tab1:
                         else "All cards picked! Click the gold star to deliver.",
                     )
 
-                # Render clickable grid with already-updated card state
+                # Render clickable grid
                 fig = plot_grid(cards, title=title, show_verifier=True,
                                 show_legend=False)
                 ax = fig.axes[0]
@@ -1071,12 +1047,28 @@ with tab1:
                 )
                 plt.close(fig)
 
-                # Stash new click for processing on next rerun (no st.rerun()
-                # needed — the component click already triggers a rerun).
+                # Process click: update state and rerun to show updated image
                 last_click = st.session_state.get("ho_last_click")
-                if coords is not None and coords != last_click:
+                if (coords is not None
+                        and coords != last_click
+                        and game_phase == "picking"):
                     st.session_state["ho_last_click"] = coords
-                    st.session_state["ho_pending_coords"] = coords
+                    gx, gy = _pixel_to_grid(coords["x"], coords["y"])
+
+                    if picked_count == 52 and _is_verifier_click(gx, gy):
+                        st.session_state["ho_phase"] = "done"
+                        elapsed = time.time() - st.session_state["ho_start_time"]
+                        st.session_state["ho_elapsed"] = elapsed
+                        st.rerun()
+                    else:
+                        card_idx = _find_clicked_card(gx, gy, cards)
+                        if card_idx is not None:
+                            cards[card_idx]["picked_up"] = True
+                            cards[card_idx]["picked_up_by"] = "human"
+                            picked_set.add(card_idx)
+                            st.session_state["ho_cards"] = cards
+                            st.session_state["ho_picked"] = picked_set
+                            st.rerun()
 
             else:
                 # Show initial grid before game starts
