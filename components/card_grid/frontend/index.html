@@ -8,7 +8,35 @@
 </head>
 <body>
 <canvas id="grid"></canvas>
-<script src="https://cdn.jsdelivr.net/npm/streamlit-component-lib@2.0.0/dist/streamlit-component-lib.min.js"></script>
+<script>
+// Minimal Streamlit component API (no CDN dependency)
+function sendMessageToStreamlitClient(type, data) {
+  const outData = Object.assign({isStreamlitMessage: true, type: type}, data);
+  window.parent.postMessage(outData, "*");
+}
+const Streamlit = {
+  setComponentReady: function() {
+    sendMessageToStreamlitClient("streamlit:componentReady", {apiVersion: 1});
+  },
+  setFrameHeight: function(height) {
+    sendMessageToStreamlitClient("streamlit:setFrameHeight", {height: height});
+  },
+  setComponentValue: function(value) {
+    sendMessageToStreamlitClient("streamlit:setComponentValue", {value: value});
+  },
+  RENDER_EVENT: "streamlit:render",
+  events: {
+    addEventListener: function(type, callback) {
+      window.addEventListener("message", function(event) {
+        if (event.data.type === type) {
+          event.detail = event.data;
+          callback(event);
+        }
+      });
+    }
+  }
+};
+</script>
 <script>
 (function() {
   const canvas = document.getElementById("grid");
