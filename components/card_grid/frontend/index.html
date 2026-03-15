@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { margin: 0; padding: 0; overflow: hidden; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="grid"></canvas>
+<script src="https://cdn.jsdelivr.net/npm/streamlit-component-lib@2.0.0/dist/streamlit-component-lib.min.js"></script>
+<script>
+(function() {
+  const canvas = document.getElementById("grid");
+  const ctx = canvas.getContext("2d");
+
+  // --- State ---
+  let cards = [];
+  let agentPositions = {};
+  let config = {};
+  let humanPicked = new Set();
+  let clickSeq = 0;
+
+  // --- Layout constants (match plot_grid) ---
+  const DATA_X0 = -0.3, DATA_X1 = 10.3;
+  const DATA_Y0 = -0.3, DATA_Y1 = 10.3;
+  const DATA_W = DATA_X1 - DATA_X0;
+  const DATA_H = DATA_Y1 - DATA_Y0;
+
+  // Canvas logical size
+  const CW = 420, CH = 420;
+  // Margins (fraction of canvas)
+  const ML = 0.08, MR = 0.03, MT = 0.07, MB = 0.05;
+  const AX = ML * CW, AY = MT * CH;
+  const AW = (1 - ML - MR) * CW, AH = (1 - MT - MB) * CH;
+
+  function setupCanvas() {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = CW * dpr;
+    canvas.height = CH * dpr;
+    canvas.style.width = CW + "px";
+    canvas.style.height = CH + "px";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  // --- Coordinate transforms ---
+  function dataToCanvas(dx, dy) {
+    const cx = AX + (dx - DATA_X0) / DATA_W * AW;
+    const cy = AY + (DATA_Y1 - dy) / DATA_H * AH;  // flip y
+    return [cx, cy];
+  }
+  function canvasToData(cx, cy) {
+    const dx = DATA_X0 + (cx - AX) / AW * DATA_W;
+    const dy = DATA_Y1 - (cy - AY) / AH * DATA_H;
+    return [dx, dy];
+  }
+  function dataScale(d) { return d / DATA_W * AW; }
+
+  // --- Colors ---
+  const SUIT_COLORS = {
+    hearts: "#e74c3c", diamonds: "#e67e22",
+    clubs: "#2c3e50", spades: "#555555"
+  };
+  const AGENT_COLORS = ["#3498db", "#e74c3c", "#27ae60", "#9b59b6"];
+
+  function dark() { return config.dark_mode || false; }
+  function bg()   { return dark() ? "#0e1117" : "#ffffff"; }
+  function gridC() { return dark() ? "#444444" : "#cccccc"; }
+  function pickedC() { return dark() ? "#555555" : "#cccccc"; }
+  function titleC() { return dark() ? "#fafafa" : "#000000"; }
+  function cardBg() { return dark() ? "#2a2a2a" : "#fffff0"; }
+  function cardEdge() { return dark() ? "#555555" : "#bbbbbb"; }
+
+  // --- Drawing ---
+  function redraw() {
+    ctx.fillStyle = bg();
+    ctx.fillRect(0, 0, CW, CH);
+
+    drawTitle();
+    drawRegions();
+    drawGridLines();
+    drawCards();
+    drawVerifier();
+    drawAgents();
+  }
+
+  function drawTitle() {
+    const title = config.title || "";
+    ctx.fillStyle = titleC();
+    ctx.font = "bold 13px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.fillText(title, CW / 2, 4);
+  }
+
+  function drawGridLines() {
+    ctx.strokeStyle = gridC();
+    ctx.lineWidth = 0.5;
+    ctx.globalAlpha = 0.2;
+    ctx.setLineDash([4, 4]);
+    for (let i = 0; i <= 10; i++) {
+      const [x0, y0] = dataToCanvas(i, 0);
+      const [x1, y1] = dataToCanvas(i, 10);
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+      const [a0, b0] = dataToCanvas(0, i);
+      const [a1, b1] = dataToCanvas(10, i);
+      ctx.beginPath(); ctx.moveTo(a0, b0); ctx.lineTo(a1, b1); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+  }
+
+  function drawRegions() {
+    const n = config.show_regions || 0;
+    if (n === 2) {
+      ctx.globalAlpha = 0.05;
+      const [x0, y0] = dataToCanvas(0, 10);
+      const [x1, y1] = dataToCanvas(5, 0);
+      const [x2, y2] = dataToCanvas(10, 0);
+      ctx.fillStyle = AGENT_COLORS[0];
+      ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+      ctx.fillStyle = AGENT_COLORS[1];
+      ctx.fillRect(x1, y0, x2 - x1, y1 - y0);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = gridC(); ctx.lineWidth = 1;
+      ctx.setLineDash([5, 5]);
+      ctx.beginPath(); ctx.moveTo(x1, y0); ctx.lineTo(x1, y1); ctx.stroke();
+      ctx.setLineDash([]);
+    } else if (n === 4) {
+      ctx.globalAlpha = 0.05;
+      const quads = [[0,0,5,5,0],[5,0,10,5,1],[0,5,5,10,2],[5,5,10,10,3]];
+      for (const [qx0,qy0,qx1,qy1,ci] of quads) {
+        const [a, b] = dataToCanvas(qx0, qy1);
+        const [c, d] = dataToCanvas(qx1, qy0);
+        ctx.fillStyle = AGENT_COLORS[ci];
+        ctx.fillRect(a, b, c - a, d - b);
+      }
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = gridC(); ctx.lineWidth = 1;
+      ctx.setLineDash([5, 5]);
+      const [mx] = dataToCanvas(5, 0);
+      const [,mt] = dataToCanvas(0, 10);
+      const [,mb] = dataToCanvas(0, 0);
+      ctx.beginPath(); ctx.moveTo(mx, mt); ctx.lineTo(mx, mb); ctx.stroke();
+      const [ml] = dataToCanvas(0, 5);
+      const [mr] = dataToCanvas(10, 5);
+      const [,my] = dataToCanvas(0, 5);
+      ctx.beginPath(); ctx.moveTo(ml, my); ctx.lineTo(mr, my); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+
+  function drawCards() {
+    const cw = dataScale(0.38), ch = dataScale(0.52);
+    const r = dataScale(0.05);
+
+    for (let i = 0; i < cards.length; i++) {
+      const c = cards[i];
+      const [cx, cy] = dataToCanvas(c.x, c.y);
+      const x = cx - cw / 2, y = cy - ch / 2;
+
+      if (c.picked_up) {
+        // Picked card — green for human, faded for agent
+        const isHuman = humanPicked.has(i) || c.picked_up_by === "human";
+        if (isHuman) {
+          ctx.globalAlpha = 0.4;
+          ctx.fillStyle = "#27ae60";
+          ctx.strokeStyle = "#1e8449";
+        } else {
+          ctx.globalAlpha = 0.25;
+          ctx.fillStyle = pickedC();
+          ctx.strokeStyle = pickedC();
+        }
+        ctx.lineWidth = 0.5;
+        roundRect(x, y, cw, ch, r);
+        ctx.fill(); ctx.stroke();
+        ctx.globalAlpha = 1;
+      } else {
+        // Unpicked card — card background + suit symbol
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = cardBg();
+        ctx.strokeStyle = cardEdge();
+        ctx.lineWidth = 0.8;
+        roundRect(x, y, cw, ch, r);
+        ctx.fill(); ctx.stroke();
+
+        // Suit symbol
+        drawSuit(c.suit, cx, cy);
+      }
+    }
+  }
+
+  function drawSuit(suit, cx, cy) {
+    const s = dataScale(0.18);
+    ctx.fillStyle = SUIT_COLORS[suit] || "#000";
+    ctx.globalAlpha = 0.9;
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(s, -s); // flip y for data coords
+
+    ctx.beginPath();
+    if (suit === "hearts") {
+      ctx.moveTo(0, -0.5);
+      ctx.quadraticCurveTo(-0.5, 0.1, -0.5, 0.6);
+      ctx.quadraticCurveTo(-0.25, 0.8, 0, 0.5);
+      ctx.quadraticCurveTo(0.25, 0.8, 0.5, 0.6);
+      ctx.quadraticCurveTo(0.5, 0.1, 0, -0.5);
+    } else if (suit === "diamonds") {
+      ctx.moveTo(0, 1);
+      ctx.lineTo(0.45, 0);
+      ctx.lineTo(0, -1);
+      ctx.lineTo(-0.45, 0);
+      ctx.closePath();
+    } else if (suit === "spades") {
+      ctx.moveTo(0, 0.9);
+      ctx.quadraticCurveTo(-0.5, 0.1, -0.5, -0.3);
+      ctx.quadraticCurveTo(-0.25, -0.5, 0, -0.2);
+      ctx.quadraticCurveTo(0.25, -0.5, 0.5, -0.3);
+      ctx.quadraticCurveTo(0.5, 0.1, 0, 0.9);
+      ctx.moveTo(-0.1, -0.5);
+      ctx.lineTo(-0.1, -0.9);
+      ctx.lineTo(0.1, -0.9);
+      ctx.lineTo(0.1, -0.5);
+    } else if (suit === "clubs") {
+      // Three circles + stem
+      const r = 0.25;
+      ctx.arc(0, 0.35, r, 0, Math.PI * 2);
+      ctx.moveTo(r - 0.3, -0.1);
+      ctx.arc(-0.3, -0.1, r, 0, Math.PI * 2);
+      ctx.moveTo(r + 0.3, -0.1);
+      ctx.arc(0.3, -0.1, r, 0, Math.PI * 2);
+      ctx.moveTo(-0.08, -0.3);
+      ctx.lineTo(-0.08, -0.7);
+      ctx.lineTo(0.08, -0.7);
+      ctx.lineTo(0.08, -0.3);
+    }
+    ctx.fill();
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
+  function drawVerifier() {
+    if (config.show_verifier === false) return;
+    const vx = config.verifier_x != null ? config.verifier_x : 5;
+    const vy = config.verifier_y != null ? config.verifier_y : 5;
+    const [cx, cy] = dataToCanvas(vx, vy);
+    const outerR = dataScale(0.4);
+    const innerR = outerR * 0.4;
+
+    // 5-pointed star
+    ctx.fillStyle = "#f1c40f";
+    ctx.strokeStyle = "#d4ac0d";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const r = i % 2 === 0 ? outerR : innerR;
+      const a = Math.PI / 2 + i * Math.PI / 5;
+      const px = cx + r * Math.cos(a);
+      const py = cy - r * Math.sin(a);
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+
+    // "V" label
+    ctx.fillStyle = "#7d6608";
+    ctx.font = "bold 9px sans-serif";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("V", cx, cy + 1);
+  }
+
+  function drawAgents() {
+    if (!agentPositions || typeof agentPositions !== "object") return;
+    const scoreboard = config.scoreboard || {};
+    for (const [aid, pos] of Object.entries(agentPositions)) {
+      if (!pos || pos.length < 2) continue;
+      const [cx, cy] = dataToCanvas(pos[0], pos[1]);
+      const idx = parseInt(aid.split("_")[1]) || 0;
+      const color = AGENT_COLORS[idx % AGENT_COLORS.length];
+
+      // Circle with white edge
+      ctx.fillStyle = color;
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(cx, cy, dataScale(0.3), 0, Math.PI * 2);
+      ctx.fill(); ctx.stroke();
+
+      // Label
+      const label = scoreboard[aid] != null ? "" + scoreboard[aid] : "" + idx;
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 10px sans-serif";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(label, cx, cy + 1);
+    }
+  }
+
+  // --- Click handling ---
+  canvas.addEventListener("click", function(e) {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = CW / rect.width;
+    const scaleY = CH / rect.height;
+    const px = (e.clientX - rect.left) * scaleX;
+    const py = (e.clientY - rect.top) * scaleY;
+    const [gx, gy] = canvasToData(px, py);
+
+    // Check verifier click
+    const vx = config.verifier_x != null ? config.verifier_x : 5;
+    const vy = config.verifier_y != null ? config.verifier_y : 5;
+    if (Math.hypot(gx - vx, gy - vy) < 0.7) {
+      clickSeq++;
+      Streamlit.setComponentValue({type: "verifier_click", seq: clickSeq});
+      return;
+    }
+
+    // Find nearest unpicked card
+    let bestIdx = -1, bestDist = 0.5;
+    for (let i = 0; i < cards.length; i++) {
+      if (cards[i].picked_up) continue;
+      const d = Math.hypot(cards[i].x - gx, cards[i].y - gy);
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
+    }
+
+    if (bestIdx >= 0) {
+      // Instant local update
+      cards[bestIdx].picked_up = true;
+      cards[bestIdx].picked_up_by = "human";
+      humanPicked.add(bestIdx);
+      redraw();
+
+      // Notify Python
+      clickSeq++;
+      Streamlit.setComponentValue({type: "card_click", index: bestIdx, seq: clickSeq});
+    }
+  });
+
+  // --- Streamlit lifecycle ---
+  Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, function(event) {
+    const args = event.detail.args;
+    const newCards = args.cards || [];
+    config = args.config || {};
+    agentPositions = args.agent_positions || {};
+
+    // Merge server state with local picks.
+    // Server is authoritative for agent picks. Keep local human picks
+    // that server hasn't acknowledged yet.
+    const newHumanPicked = new Set();
+    for (let i = 0; i < newCards.length; i++) {
+      if (newCards[i].picked_up_by === "human") {
+        newHumanPicked.add(i);
+      } else if (humanPicked.has(i) && !newCards[i].picked_up) {
+        // Local pick not yet acknowledged — keep it
+        newCards[i].picked_up = true;
+        newCards[i].picked_up_by = "human";
+        newHumanPicked.add(i);
+      }
+    }
+    cards = newCards;
+    humanPicked = newHumanPicked;
+
+    redraw();
+    Streamlit.setFrameHeight(CH);
+  });
+
+  setupCanvas();
+  Streamlit.setFrameHeight(CH);
+  Streamlit.setComponentReady();
+})();
+</script>
+</body>
+</html>

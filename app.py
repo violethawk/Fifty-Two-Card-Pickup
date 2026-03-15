@@ -8,7 +8,6 @@ Run with:
 from __future__ import annotations
 
 import base64
-import io
 import math
 import random
 import time
@@ -18,9 +17,9 @@ from urllib.parse import urlencode
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from PIL import Image
 import streamlit as st
-from streamlit_image_coordinates import streamlit_image_coordinates
+
+from components.card_grid import card_grid
 
 from card_pickup import (
     AppState,
@@ -315,70 +314,6 @@ def plot_benchmark_results(results: dict) -> plt.Figure:
     plt.tight_layout()
     return fig
 
-
-# ---------------------------------------------------------------------------
-# Interactive click helpers (Human-only / Agent-assist modes)
-# ---------------------------------------------------------------------------
-
-_INTERACTIVE_DPI = 100  # balance between crispness and render speed
-
-
-def _fig_to_image(fig: plt.Figure) -> Image.Image:
-    """Render a matplotlib figure to a PIL Image at interactive DPI."""
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=_INTERACTIVE_DPI)
-    buf.seek(0)
-    return Image.open(buf)
-
-
-def _pixel_to_grid(px: int, py: int) -> Tuple[float, float]:
-    """Convert pixel coordinates in saved PNG to grid data coordinates.
-
-    Uses the deterministic plot_grid layout: figsize=(3.5, 3.5),
-    subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.16),
-    xlim=(-0.3, 10.3), ylim=(-0.3, 10.3).
-    """
-    dpi = _INTERACTIVE_DPI
-    fig_w = 3.5 * dpi
-    fig_h = 3.5 * dpi
-    # subplots_adjust fractions
-    ax_left = 0.08 * fig_w
-    ax_right = 0.97 * fig_w
-    ax_bottom_px = (1 - 0.16) * fig_h  # PNG y is top-down
-    ax_top_px = (1 - 0.92) * fig_h
-    ax_w = ax_right - ax_left
-    ax_h = ax_bottom_px - ax_top_px
-    # data limits
-    x0, x1 = -0.3, 10.3
-    y0, y1 = -0.3, 10.3
-    grid_x = x0 + (px - ax_left) / ax_w * (x1 - x0)
-    grid_y = y1 - (py - ax_top_px) / ax_h * (y1 - y0)
-    return grid_x, grid_y
-
-
-def _find_clicked_card(
-    grid_x: float, grid_y: float, cards: List[Card], max_dist: float = 0.5
-) -> Optional[int]:
-    """Find the nearest unpicked card within *max_dist* of a grid coordinate.
-
-    Returns the card index or ``None``.
-    """
-    best_idx = None
-    best_d = max_dist
-    for i, c in enumerate(cards):
-        if c["picked_up"]:
-            continue
-        d = math.hypot(c["x"] - grid_x, c["y"] - grid_y)
-        if d < best_d:
-            best_d = d
-            best_idx = i
-    return best_idx
-
-
-def _is_verifier_click(grid_x: float, grid_y: float) -> bool:
-    """Return True if the click is near the verifier station."""
-    from card_pickup import VERIFIER_X, VERIFIER_Y
-    return math.hypot(grid_x - VERIFIER_X, grid_y - VERIFIER_Y) < 0.7
 
 
 def plot_compare(cards: List[Card], configs: List[int]) -> plt.Figure:
@@ -986,7 +921,6 @@ with tab1:
                 st.session_state["ho_picked"] = set()
                 st.session_state["ho_phase"] = "picking"
                 st.session_state["ho_start_time"] = time.time()
-                st.session_state["ho_last_click"] = None
                 st.rerun()
 
             if "ho_cards" in st.session_state:
@@ -1004,7 +938,7 @@ with tab1:
                 else:
                     title = "Pick up cards!"
 
-                # Write scoreboard and progress FIRST (stable layout above image)
+                # Scoreboard and progress above the grid
                 scoreboard_placeholder.markdown(
                     f"<span style='color:#27ae60;font-weight:bold'>You</span>: {picked_count}",
                     unsafe_allow_html=True,
@@ -1033,45 +967,48 @@ with tab1:
                         else "All cards picked! Click the gold star to deliver.",
                     )
 
-                # Render clickable grid
-                fig = plot_grid(cards, title=title, show_verifier=True,
-                                show_legend=False, human_picked=picked_set)
-                grid_image = _fig_to_image(fig)
-                plt.close(fig)
-                coords = streamlit_image_coordinates(
-                    grid_image, key="ho_grid",
+                # Canvas-based interactive grid
+                result = card_grid(
+                    cards,
+                    config={
+                        "dark_mode": DARK_MODE,
+                        "show_verifier": True,
+                        "show_regions": 0,
+                        "verifier_x": 5.0,
+                        "verifier_y": 5.0,
+                        "title": title,
+                    },
+                    key="ho_grid",
                 )
 
-                # Process click: update state and rerun to show updated image
-                last_click = st.session_state.get("ho_last_click")
-                if (coords is not None
-                        and coords != last_click
-                        and game_phase == "picking"):
-                    st.session_state["ho_last_click"] = coords
-                    gx, gy = _pixel_to_grid(coords["x"], coords["y"])
-
-                    if picked_count == 52 and _is_verifier_click(gx, gy):
+                if result is not None and game_phase == "picking":
+                    if result["type"] == "card_click":
+                        idx = result["index"]
+                        if not cards[idx]["picked_up"]:
+                            cards[idx]["picked_up"] = True
+                            cards[idx]["picked_up_by"] = "human"
+                            picked_set.add(idx)
+                            st.session_state["ho_cards"] = cards
+                            st.session_state["ho_picked"] = picked_set
+                            st.rerun()
+                    elif result["type"] == "verifier_click" and picked_count == 52:
                         st.session_state["ho_phase"] = "done"
                         elapsed = time.time() - st.session_state["ho_start_time"]
                         st.session_state["ho_elapsed"] = elapsed
                         st.rerun()
-                    else:
-                        card_idx = _find_clicked_card(gx, gy, cards)
-                        if card_idx is not None:
-                            cards[card_idx]["picked_up"] = True
-                            cards[card_idx]["picked_up_by"] = "human"
-                            picked_set.add(card_idx)
-                            st.session_state["ho_cards"] = cards
-                            st.session_state["ho_picked"] = picked_set
-                            st.rerun()
 
             else:
                 # Show initial grid before game starts
                 display_cards = _get_cards()
-                fig = plot_grid(display_cards, title="Click 'Start Game' to begin",
-                                show_legend=False)
-                viz_placeholder.pyplot(fig, width="content")
-                plt.close(fig)
+                card_grid(
+                    display_cards,
+                    config={
+                        "dark_mode": DARK_MODE,
+                        "show_verifier": True,
+                        "title": "Click 'Start Game' to begin",
+                    },
+                    key="ho_grid_init",
+                )
 
         # ---------------------------------------------------------------
         # Agent Assist Mode
@@ -1081,7 +1018,6 @@ with tab1:
                 cards = _get_cards()
                 cards = [dict(c) for c in cards]
 
-                # Pre-partition cards into agent regions
                 agent_ids = [f"agent_{i}" for i in range(num_agents)]
                 region_cards = {aid: [] for aid in agent_ids}
                 for idx, card in enumerate(cards):
@@ -1105,9 +1041,7 @@ with tab1:
                 st.session_state["aa_human_count"] = 0
                 st.session_state["aa_delivered"] = 0
                 st.session_state["aa_human_delivered"] = False
-                st.session_state["aa_last_click"] = None
                 st.session_state["aa_phase"] = "picking"
-                st.session_state["aa_step"] = 0
                 st.session_state["aa_start_time"] = time.time()
                 st.session_state["aa_delivery_start"] = {}
                 st.session_state["aa_delivery_progress"] = {}
@@ -1137,10 +1071,9 @@ with tab1:
                 all_agents_done = all(s == "done" for s in agent_state.values())
 
                 # --- Advance agents by one round ---
-                if aa_phase == "picking" or aa_phase == "delivering":
+                if aa_phase != "done":
                     for aid in agent_ids:
                         if agent_state[aid] == "picking":
-                            # Remove any cards the human already picked
                             remaining[aid] = [
                                 idx for idx in remaining[aid]
                                 if not cards[idx]["picked_up"]
@@ -1180,10 +1113,10 @@ with tab1:
                             t = delivery_progress[aid]
                             sx, sy = delivery_start[aid]
                             frac = min(t / delivery_steps_per_agent, 1.0)
-                            ix = sx + (VERIFIER_X - sx) * frac
-                            iy = sy + (VERIFIER_Y - sy) * frac
-                            positions[aid] = [ix, iy]
-
+                            positions[aid] = [
+                                sx + (VERIFIER_X - sx) * frac,
+                                sy + (VERIFIER_Y - sy) * frac,
+                            ]
                             if t >= delivery_steps_per_agent:
                                 aa_delivered += agent_counts[aid]
                                 agent_state[aid] = "done"
@@ -1196,39 +1129,35 @@ with tab1:
                     st.session_state["aa_delivered"] = aa_delivered
                     st.session_state["aa_delivery_start"] = delivery_start
                     st.session_state["aa_delivery_progress"] = delivery_progress
-                    st.session_state["aa_step"] = st.session_state["aa_step"] + 1
 
-                # Recompute after agent round
                 picked_count = sum(1 for c in cards if c["picked_up"])
                 all_agents_done = all(s == "done" for s in agent_state.values())
 
-                # Determine title
+                # Title
                 if aa_phase == "done":
-                    title = "Verification: PASS"
+                    title = "PASS"
                 elif picked_count < 52:
-                    title = f"Agent Assist \u2014 {picked_count}/52 picked"
+                    title = f"Agent Assist \u2014 {picked_count}/52"
                 elif not human_delivered and human_count > 0:
                     title = "Click the star to deliver"
-                elif all_agents_done and (human_delivered or human_count == 0):
+                elif all_agents_done:
                     title = "All done!"
                 else:
-                    title = f"Delivering \u2014 {aa_delivered}/{picked_count} to verifier"
+                    title = f"Delivering \u2014 {aa_delivered}/{picked_count}"
 
-                # Write scoreboard and progress FIRST (stable layout above image)
+                # Scoreboard
                 score_parts = []
                 for idx_a, aid in enumerate(sorted(agent_counts.keys())):
                     color = AGENT_COLORS[idx_a % len(AGENT_COLORS)]
-                    count = agent_counts.get(aid, 0)
                     score_parts.append(
                         f"<span style='color:{color};font-weight:bold'>"
-                        f"Agent {idx_a}</span>: {count}"
+                        f"Agent {idx_a}</span>: {agent_counts.get(aid, 0)}"
                     )
                 score_parts.append(
                     f"<span style='color:#27ae60;font-weight:bold'>You</span>: {human_count}"
                 )
                 scoreboard_placeholder.markdown(
-                    " &nbsp;&nbsp; ".join(score_parts),
-                    unsafe_allow_html=True,
+                    " &nbsp;&nbsp; ".join(score_parts), unsafe_allow_html=True,
                 )
 
                 if aa_phase == "done":
@@ -1244,55 +1173,47 @@ with tab1:
                               else f"Delivering: {aa_delivered}/{picked_count}"),
                     )
 
-                # Render clickable grid
-                fig = plot_grid(
+                # Canvas grid with agents
+                result = card_grid(
                     cards,
-                    agent_positions=positions,
-                    title=title,
-                    show_regions=aa_num_agents,
-                    num_agents=aa_num_agents,
-                    human_picked=human_picked,
-                )
-                grid_image = _fig_to_image(fig)
-                plt.close(fig)
-                coords = streamlit_image_coordinates(
-                    grid_image, key="aa_grid",
+                    agent_positions={k: list(v) for k, v in positions.items()},
+                    config={
+                        "dark_mode": DARK_MODE,
+                        "show_verifier": True,
+                        "show_regions": aa_num_agents,
+                        "verifier_x": float(VERIFIER_X),
+                        "verifier_y": float(VERIFIER_Y),
+                        "title": title,
+                        "scoreboard": {k: v for k, v in agent_counts.items()},
+                    },
+                    key="aa_grid",
                 )
 
+                # Handle human clicks
                 needs_rerun = False
-                last_click = st.session_state.get("aa_last_click")
-                if (coords is not None
-                        and coords != last_click
-                        and aa_phase != "done"):
-                    st.session_state["aa_last_click"] = coords
-                    gx, gy = _pixel_to_grid(coords["x"], coords["y"])
-
-                    if _is_verifier_click(gx, gy) and human_count > 0:
-                        # Human delivers their cards
+                if result is not None and aa_phase != "done":
+                    if result["type"] == "verifier_click" and human_count > 0:
                         st.session_state["aa_human_delivered"] = True
                         st.session_state["aa_delivered"] = aa_delivered + human_count
-                        human_delivered = True
-
-                        # Check if everything is done
                         if all_agents_done:
                             st.session_state["aa_phase"] = "done"
                             st.session_state["aa_elapsed"] = (
                                 time.time() - st.session_state["aa_start_time"]
                             )
                         needs_rerun = True
-                    else:
-                        card_idx = _find_clicked_card(gx, gy, cards)
-                        if card_idx is not None:
-                            cards[card_idx]["picked_up"] = True
-                            cards[card_idx]["picked_up_by"] = "human"
-                            human_picked.add(card_idx)
+                    elif result["type"] == "card_click":
+                        idx = result["index"]
+                        if not cards[idx]["picked_up"]:
+                            cards[idx]["picked_up"] = True
+                            cards[idx]["picked_up_by"] = "human"
+                            human_picked.add(idx)
                             human_count += 1
                             st.session_state["aa_cards"] = cards
                             st.session_state["aa_human_picked"] = human_picked
                             st.session_state["aa_human_count"] = human_count
                             needs_rerun = True
 
-                # Final stats when done
+                # Final stats
                 if aa_phase == "done":
                     elapsed = st.session_state.get("aa_elapsed", 0)
                     total_delivered = st.session_state["aa_delivered"]
@@ -1305,26 +1226,26 @@ with tab1:
                     stats_md += f"| **You** | **{human_count}** |\n"
                     stats_placeholder.markdown(stats_md)
 
-                # Auto-advance agents while game is active
+                # Auto-advance agents
                 if aa_phase != "done" and not all_agents_done:
                     needs_rerun = True
 
                 if needs_rerun:
-                    time.sleep(0.15)
+                    time.sleep(0.1)
                     st.rerun()
 
-                # If agents are done but human hasn't delivered yet, just wait
-                # for clicks (no auto-rerun needed)
-
             else:
-                # Show initial grid before game starts
                 display_cards = _get_cards()
-                fig = plot_grid(
-                    display_cards, title="Click 'Start Agent Assist' to begin",
-                    show_regions=num_agents, num_agents=num_agents,
+                card_grid(
+                    display_cards,
+                    config={
+                        "dark_mode": DARK_MODE,
+                        "show_verifier": True,
+                        "show_regions": num_agents,
+                        "title": "Click 'Start Agent Assist' to begin",
+                    },
+                    key="aa_grid_init",
                 )
-                viz_placeholder.pyplot(fig, width="content")
-                plt.close(fig)
 
         # ---------------------------------------------------------------
         # Agent Simulation Mode (original)
