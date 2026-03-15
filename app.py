@@ -144,6 +144,7 @@ def plot_grid(
     trails: Dict[str, List[Tuple[float, float]]] | None = None,
     num_agents: int = 0,
     scoreboard: Dict[str, int] | None = None,
+    show_legend: bool = True,
 ) -> plt.Figure:
     """Render the 10x10 grid with cards and optional agent positions."""
     fig, ax = plt.subplots(figsize=(3.5, 3.5), dpi=80)
@@ -242,36 +243,37 @@ def plot_grid(
     ax.set_yticks(range(11))
 
     # Legend: verifier + agents only (suit shapes are self-explanatory)
-    n = num_agents or (len(agent_positions) if agent_positions else 0)
-    handles = [
-        plt.Line2D([0], [0], marker="*", color="w", markerfacecolor="#f1c40f",
-                   markersize=10, label="Verifier", markeredgecolor="#d4ac0d",
-                   markeredgewidth=0.5)
-    ]
-    for i in range(4):  # always show 4 slots for consistent width
-        color = AGENT_COLORS[i % len(AGENT_COLORS)]
-        if i < n:
-            handles.append(
-                plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=color,
-                           markersize=8, label=f"Agent {i}",
-                           markeredgecolor="white", markeredgewidth=1)
-            )
-        else:
-            handles.append(
-                plt.Line2D([0], [0], marker="o", color="w", markerfacecolor="w",
-                           markersize=8, label=f"Agent {i}",
-                           markeredgecolor="w", markeredgewidth=0, alpha=0)
-            )
-    leg = ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.06),
-                    ncol=5, fontsize=7, frameon=False)
-    for i, text in enumerate(leg.get_texts()):
-        if DARK_MODE:
-            text.set_color("#fafafa")
-        if i > n:  # after verifier + active agents
-            text.set_alpha(0)
-    for i, handle in enumerate(leg.legend_handles):
-        if i > n:
-            handle.set_alpha(0)
+    if show_legend:
+        n = num_agents or (len(agent_positions) if agent_positions else 0)
+        handles = [
+            plt.Line2D([0], [0], marker="*", color="w", markerfacecolor="#f1c40f",
+                       markersize=10, label="Verifier", markeredgecolor="#d4ac0d",
+                       markeredgewidth=0.5)
+        ]
+        for i in range(4):  # always show 4 slots for consistent width
+            color = AGENT_COLORS[i % len(AGENT_COLORS)]
+            if i < n:
+                handles.append(
+                    plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=color,
+                               markersize=8, label=f"Agent {i}",
+                               markeredgecolor="white", markeredgewidth=1)
+                )
+            else:
+                handles.append(
+                    plt.Line2D([0], [0], marker="o", color="w", markerfacecolor="w",
+                               markersize=8, label=f"Agent {i}",
+                               markeredgecolor="w", markeredgewidth=0, alpha=0)
+                )
+        leg = ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.06),
+                        ncol=5, fontsize=7, frameon=False)
+        for i, text in enumerate(leg.get_texts()):
+            if DARK_MODE:
+                text.set_color("#fafafa")
+            if i > n:  # after verifier + active agents
+                text.set_alpha(0)
+        for i, handle in enumerate(leg.legend_handles):
+            if i > n:
+                handle.set_alpha(0)
 
     fig.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.16)
     return fig
@@ -777,10 +779,11 @@ with tab1:
         st.caption(f"[Shareable link]({share_url}) for this configuration")
 
     with col_viz:
-        viz_placeholder = st.empty()
-        progress_placeholder = st.empty()
-        # Live scoreboard placeholder
+        # Placeholders in render order — scoreboard and progress above the grid
+        # so they don't cause layout shifts when updated.
         scoreboard_placeholder = st.empty()
+        progress_placeholder = st.empty()
+        viz_placeholder = st.empty()
         stats_placeholder = st.empty()
         log_placeholder = st.empty()
 
@@ -987,8 +990,38 @@ with tab1:
                 else:
                     title = "Pick up cards!"
 
-                # Render clickable grid
-                fig = plot_grid(cards, title=title, show_verifier=True)
+                # Write scoreboard and progress FIRST (stable layout above image)
+                scoreboard_placeholder.markdown(
+                    f"<span style='color:#27ae60;font-weight:bold'>You</span>: {picked_count}",
+                    unsafe_allow_html=True,
+                )
+
+                if game_phase == "done":
+                    elapsed = st.session_state.get("ho_elapsed", 0)
+                    all_picked = all(c["picked_up"] for c in cards)
+                    unique_keys = {(c["suit"], c["rank"]) for c in cards}
+                    passed = all_picked and len(unique_keys) == 52 and len(cards) == 52
+                    result = "PASS" if passed else "FAIL"
+                    progress_placeholder.progress(
+                        1.0, text=f"Verification: {result}"
+                    )
+                    stats_placeholder.markdown(
+                        f"### Results\n\n"
+                        f"You picked up all **52 cards** in **{elapsed:.1f}s**.\n\n"
+                        f"Verification: **{result}**"
+                    )
+                else:
+                    frac = picked_count / 52
+                    progress_placeholder.progress(
+                        max(frac, 0.01),
+                        text=f"Picked up: {picked_count}/52"
+                        if picked_count < 52
+                        else "All cards picked! Click the gold star to deliver.",
+                    )
+
+                # Render clickable grid into viz_placeholder
+                fig = plot_grid(cards, title=title, show_verifier=True,
+                                show_legend=False)
                 ax = fig.axes[0]
 
                 # Overlay green tint for human-picked cards
@@ -1004,9 +1037,10 @@ with tab1:
                         ax.add_patch(rect)
 
                 grid_image = _fig_to_image(fig)
-                coords = streamlit_image_coordinates(
-                    grid_image, key="ho_grid",
-                )
+                with viz_placeholder.container():
+                    coords = streamlit_image_coordinates(
+                        grid_image, key="ho_grid",
+                    )
 
                 last_click = st.session_state.get("ho_last_click")
                 if (coords is not None
@@ -1034,41 +1068,11 @@ with tab1:
 
                 plt.close(fig)
 
-                # Progress bar
-                frac = picked_count / 52
-                progress_placeholder.progress(
-                    max(frac, 0.01),
-                    text=f"Picked up: {picked_count}/52"
-                    if picked_count < 52 else "All cards picked! Click the gold star to deliver.",
-                )
-
-                # Scoreboard
-                scoreboard_placeholder.markdown(
-                    f"<span style='color:#27ae60;font-weight:bold'>You</span>: {picked_count}",
-                    unsafe_allow_html=True,
-                )
-
-                if game_phase == "done":
-                    elapsed = st.session_state.get("ho_elapsed", 0)
-                    # Verify
-                    all_picked = all(c["picked_up"] for c in cards)
-                    unique_keys = {(c["suit"], c["rank"]) for c in cards}
-                    passed = all_picked and len(unique_keys) == 52 and len(cards) == 52
-                    result = "PASS" if passed else "FAIL"
-
-                    progress_placeholder.progress(
-                        1.0, text=f"Verification: {result}"
-                    )
-                    stats_placeholder.markdown(
-                        f"### Results\n\n"
-                        f"You picked up all **52 cards** in **{elapsed:.1f}s**.\n\n"
-                        f"Verification: **{result}**"
-                    )
-
             else:
                 # Show initial grid before game starts
                 display_cards = _get_cards()
-                fig = plot_grid(display_cards, title="Click 'Start Game' to begin")
+                fig = plot_grid(display_cards, title="Click 'Start Game' to begin",
+                                show_legend=False)
                 viz_placeholder.pyplot(fig, width="content")
                 plt.close(fig)
 
@@ -1213,7 +1217,37 @@ with tab1:
                 else:
                     title = f"Delivering \u2014 {aa_delivered}/{picked_count} to verifier"
 
-                # Render clickable grid
+                # Write scoreboard and progress FIRST (stable layout above image)
+                score_parts = []
+                for idx_a, aid in enumerate(sorted(agent_counts.keys())):
+                    color = AGENT_COLORS[idx_a % len(AGENT_COLORS)]
+                    count = agent_counts.get(aid, 0)
+                    score_parts.append(
+                        f"<span style='color:{color};font-weight:bold'>"
+                        f"Agent {idx_a}</span>: {count}"
+                    )
+                score_parts.append(
+                    f"<span style='color:#27ae60;font-weight:bold'>You</span>: {human_count}"
+                )
+                scoreboard_placeholder.markdown(
+                    " &nbsp;&nbsp; ".join(score_parts),
+                    unsafe_allow_html=True,
+                )
+
+                if aa_phase == "done":
+                    progress_placeholder.progress(1.0, text="Verification: PASS")
+                else:
+                    frac = picked_count / 52
+                    progress_placeholder.progress(
+                        max(frac, 0.01),
+                        text=f"Picked: {picked_count}/52"
+                        if picked_count < 52
+                        else ("Click the gold star to deliver your cards!"
+                              if human_count > 0 and not human_delivered
+                              else f"Delivering: {aa_delivered}/{picked_count}"),
+                    )
+
+                # Render clickable grid into viz_placeholder
                 fig = plot_grid(
                     cards,
                     agent_positions=positions,
@@ -1236,9 +1270,10 @@ with tab1:
                         ax.add_patch(rect)
 
                 grid_image = _fig_to_image(fig)
-                coords = streamlit_image_coordinates(
-                    grid_image, key="aa_grid",
-                )
+                with viz_placeholder.container():
+                    coords = streamlit_image_coordinates(
+                        grid_image, key="aa_grid",
+                    )
 
                 needs_rerun = False
                 last_click = st.session_state.get("aa_last_click")
@@ -1274,37 +1309,6 @@ with tab1:
                             needs_rerun = True
 
                 plt.close(fig)
-
-                # Progress
-                frac = picked_count / 52
-                if aa_phase == "done":
-                    progress_placeholder.progress(1.0, text="Verification: PASS")
-                else:
-                    progress_placeholder.progress(
-                        max(frac, 0.01),
-                        text=f"Picked: {picked_count}/52"
-                        if picked_count < 52
-                        else ("Click the gold star to deliver your cards!"
-                              if human_count > 0 and not human_delivered
-                              else f"Delivering: {aa_delivered}/{picked_count}"),
-                    )
-
-                # Scoreboard
-                score_parts = []
-                for idx_a, aid in enumerate(sorted(agent_counts.keys())):
-                    color = AGENT_COLORS[idx_a % len(AGENT_COLORS)]
-                    count = agent_counts.get(aid, 0)
-                    score_parts.append(
-                        f"<span style='color:{color};font-weight:bold'>"
-                        f"Agent {idx_a}</span>: {count}"
-                    )
-                score_parts.append(
-                    f"<span style='color:#27ae60;font-weight:bold'>You</span>: {human_count}"
-                )
-                scoreboard_placeholder.markdown(
-                    " &nbsp;&nbsp; ".join(score_parts),
-                    unsafe_allow_html=True,
-                )
 
                 # Final stats when done
                 if aa_phase == "done":
