@@ -1037,10 +1037,9 @@ with tab1:
                         ax.add_patch(rect)
 
                 grid_image = _fig_to_image(fig)
-                with viz_placeholder.container():
-                    coords = streamlit_image_coordinates(
-                        grid_image, key="ho_grid",
-                    )
+                coords = streamlit_image_coordinates(
+                    grid_image, key="ho_grid",
+                )
 
                 last_click = st.session_state.get("ho_last_click")
                 if (coords is not None
@@ -1270,10 +1269,9 @@ with tab1:
                         ax.add_patch(rect)
 
                 grid_image = _fig_to_image(fig)
-                with viz_placeholder.container():
-                    coords = streamlit_image_coordinates(
-                        grid_image, key="aa_grid",
-                    )
+                coords = streamlit_image_coordinates(
+                    grid_image, key="aa_grid",
+                )
 
                 needs_rerun = False
                 last_click = st.session_state.get("aa_last_click")
