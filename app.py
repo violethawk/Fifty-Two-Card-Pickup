@@ -310,18 +310,21 @@ def plot_benchmark_results(results: dict) -> plt.Figure:
 # Interactive click helpers (Human-only / Agent-assist modes)
 # ---------------------------------------------------------------------------
 
+_INTERACTIVE_DPI = 150  # higher DPI for crisp clickable grids
+
+
 def _fig_to_image(fig: plt.Figure) -> Image.Image:
-    """Render a matplotlib figure to a PIL Image at its native DPI."""
+    """Render a matplotlib figure to a PIL Image at interactive DPI."""
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=fig.dpi)
+    fig.savefig(buf, format="png", dpi=_INTERACTIVE_DPI)
     buf.seek(0)
     return Image.open(buf)
 
 
 def _pixel_to_grid(px: int, py: int, fig: plt.Figure, ax) -> Tuple[float, float]:
     """Convert pixel coordinates in saved PNG to grid data coordinates."""
-    fig_w = fig.get_figwidth() * fig.dpi
-    fig_h = fig.get_figheight() * fig.dpi
+    fig_w = fig.get_figwidth() * _INTERACTIVE_DPI
+    fig_h = fig.get_figheight() * _INTERACTIVE_DPI
     bbox = ax.get_position()
     # Axes pixel bounds
     ax_left = bbox.x0 * fig_w
@@ -964,16 +967,15 @@ with tab1:
                 cards = _get_cards()
                 st.session_state["ho_cards"] = [dict(c) for c in cards]
                 st.session_state["ho_picked"] = set()
-                st.session_state["ho_click_seq"] = 0
                 st.session_state["ho_phase"] = "picking"
                 st.session_state["ho_start_time"] = time.time()
+                st.session_state["ho_last_click"] = None
                 st.rerun()
 
             if "ho_cards" in st.session_state:
                 cards = st.session_state["ho_cards"]
                 picked_set = st.session_state["ho_picked"]
                 game_phase = st.session_state["ho_phase"]
-                click_seq = st.session_state["ho_click_seq"]
                 picked_count = sum(1 for c in cards if c["picked_up"])
 
                 if game_phase == "picking":
@@ -1003,18 +1005,20 @@ with tab1:
 
                 grid_image = _fig_to_image(fig)
                 coords = streamlit_image_coordinates(
-                    grid_image, key=f"ho_grid_{click_seq}",
+                    grid_image, key="ho_grid",
                 )
 
-                if coords is not None and game_phase == "picking":
+                last_click = st.session_state.get("ho_last_click")
+                if (coords is not None
+                        and coords != last_click
+                        and game_phase == "picking"):
+                    st.session_state["ho_last_click"] = coords
                     gx, gy = _pixel_to_grid(coords["x"], coords["y"], fig, ax)
 
                     if picked_count == 52 and _is_verifier_click(gx, gy):
-                        # Deliver!
                         st.session_state["ho_phase"] = "done"
                         elapsed = time.time() - st.session_state["ho_start_time"]
                         st.session_state["ho_elapsed"] = elapsed
-                        st.session_state["ho_click_seq"] = click_seq + 1
                         plt.close(fig)
                         st.rerun()
                     else:
@@ -1025,7 +1029,6 @@ with tab1:
                             picked_set.add(card_idx)
                             st.session_state["ho_cards"] = cards
                             st.session_state["ho_picked"] = picked_set
-                            st.session_state["ho_click_seq"] = click_seq + 1
                             plt.close(fig)
                             st.rerun()
 
@@ -1101,7 +1104,7 @@ with tab1:
                 st.session_state["aa_human_count"] = 0
                 st.session_state["aa_delivered"] = 0
                 st.session_state["aa_human_delivered"] = False
-                st.session_state["aa_click_seq"] = 0
+                st.session_state["aa_last_click"] = None
                 st.session_state["aa_phase"] = "picking"
                 st.session_state["aa_step"] = 0
                 st.session_state["aa_start_time"] = time.time()
@@ -1123,7 +1126,6 @@ with tab1:
                 human_count = st.session_state["aa_human_count"]
                 aa_delivered = st.session_state["aa_delivered"]
                 human_delivered = st.session_state["aa_human_delivered"]
-                click_seq = st.session_state["aa_click_seq"]
                 aa_phase = st.session_state["aa_phase"]
                 aa_num_agents = st.session_state["aa_num_agents"]
                 delivery_start = st.session_state["aa_delivery_start"]
@@ -1235,11 +1237,15 @@ with tab1:
 
                 grid_image = _fig_to_image(fig)
                 coords = streamlit_image_coordinates(
-                    grid_image, key=f"aa_grid_{click_seq}",
+                    grid_image, key="aa_grid",
                 )
 
                 needs_rerun = False
-                if coords is not None and aa_phase != "done":
+                last_click = st.session_state.get("aa_last_click")
+                if (coords is not None
+                        and coords != last_click
+                        and aa_phase != "done"):
+                    st.session_state["aa_last_click"] = coords
                     gx, gy = _pixel_to_grid(coords["x"], coords["y"], fig, ax)
 
                     if _is_verifier_click(gx, gy) and human_count > 0:
@@ -1247,7 +1253,6 @@ with tab1:
                         st.session_state["aa_human_delivered"] = True
                         st.session_state["aa_delivered"] = aa_delivered + human_count
                         human_delivered = True
-                        st.session_state["aa_click_seq"] = click_seq + 1
 
                         # Check if everything is done
                         if all_agents_done:
@@ -1266,7 +1271,6 @@ with tab1:
                             st.session_state["aa_cards"] = cards
                             st.session_state["aa_human_picked"] = human_picked
                             st.session_state["aa_human_count"] = human_count
-                            st.session_state["aa_click_seq"] = click_seq + 1
                             needs_rerun = True
 
                 plt.close(fig)
