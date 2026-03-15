@@ -145,6 +145,7 @@ def plot_grid(
     num_agents: int = 0,
     scoreboard: Dict[str, int] | None = None,
     show_legend: bool = True,
+    human_picked: Optional[set] = None,
 ) -> plt.Figure:
     """Render the 10x10 grid with cards and optional agent positions."""
     fig, ax = plt.subplots(figsize=(3.5, 3.5), dpi=80)
@@ -184,13 +185,20 @@ def plot_grid(
     # Card dimensions in data coords
     cw, ch = 0.38, 0.52
 
-    # Draw picked cards (faded card shape)
-    for c in picked:
+    # Draw picked cards (faded card shape; green for human-picked)
+    human_set = human_picked or set()
+    for i, c in enumerate(cards):
+        if not c["picked_up"]:
+            continue
+        if i in human_set:
+            fc, ec, alpha = "#27ae60", "#1e8449", 0.4
+        else:
+            fc, ec, alpha = picked_color, picked_color, 0.25
         rect = mpatches.FancyBboxPatch(
             (c["x"] - cw / 2, c["y"] - ch / 2), cw, ch,
             boxstyle="round,pad=0.05",
-            facecolor=picked_color, edgecolor=picked_color,
-            linewidth=0.4, alpha=0.25, zorder=1)
+            facecolor=fc, edgecolor=ec,
+            linewidth=0.4, alpha=alpha, zorder=1)
         ax.add_patch(rect)
 
     # Draw unpicked cards (card background + suit symbol)
@@ -312,7 +320,7 @@ def plot_benchmark_results(results: dict) -> plt.Figure:
 # Interactive click helpers (Human-only / Agent-assist modes)
 # ---------------------------------------------------------------------------
 
-_INTERACTIVE_DPI = 150  # higher DPI for crisp clickable grids
+_INTERACTIVE_DPI = 100  # balance between crispness and render speed
 
 
 def _fig_to_image(fig: plt.Figure) -> Image.Image:
@@ -326,12 +334,13 @@ def _fig_to_image(fig: plt.Figure) -> Image.Image:
 def _pixel_to_grid(px: int, py: int) -> Tuple[float, float]:
     """Convert pixel coordinates in saved PNG to grid data coordinates.
 
-    Uses the deterministic layout: figsize=(3.5, 3.5),
+    Uses the deterministic plot_grid layout: figsize=(3.5, 3.5),
     subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.16),
-    xlim=(-0.3, 10.3), ylim=(-0.3, 10.3), rendered at _INTERACTIVE_DPI.
+    xlim=(-0.3, 10.3), ylim=(-0.3, 10.3).
     """
-    fig_w = 3.5 * _INTERACTIVE_DPI
-    fig_h = 3.5 * _INTERACTIVE_DPI
+    dpi = _INTERACTIVE_DPI
+    fig_w = 3.5 * dpi
+    fig_h = 3.5 * dpi
     # subplots_adjust fractions
     ax_left = 0.08 * fig_w
     ax_right = 0.97 * fig_w
@@ -1026,26 +1035,12 @@ with tab1:
 
                 # Render clickable grid
                 fig = plot_grid(cards, title=title, show_verifier=True,
-                                show_legend=False)
-                ax = fig.axes[0]
-
-                # Overlay green tint for human-picked cards
-                if picked_set:
-                    cw, ch = 0.38, 0.52
-                    for idx in picked_set:
-                        c = cards[idx]
-                        rect = mpatches.FancyBboxPatch(
-                            (c["x"] - cw / 2, c["y"] - ch / 2), cw, ch,
-                            boxstyle="round,pad=0.05",
-                            facecolor="#27ae60", edgecolor="#1e8449",
-                            linewidth=0.6, alpha=0.4, zorder=2)
-                        ax.add_patch(rect)
-
+                                show_legend=False, human_picked=picked_set)
                 grid_image = _fig_to_image(fig)
+                plt.close(fig)
                 coords = streamlit_image_coordinates(
                     grid_image, key="ho_grid",
                 )
-                plt.close(fig)
 
                 # Process click: update state and rerun to show updated image
                 last_click = st.session_state.get("ho_last_click")
@@ -1213,7 +1208,7 @@ with tab1:
                 elif picked_count < 52:
                     title = f"Agent Assist \u2014 {picked_count}/52 picked"
                 elif not human_delivered and human_count > 0:
-                    title = "Click the verifier star to deliver your cards!"
+                    title = "Click the star to deliver"
                 elif all_agents_done and (human_delivered or human_count == 0):
                     title = "All done!"
                 else:
@@ -1249,29 +1244,17 @@ with tab1:
                               else f"Delivering: {aa_delivered}/{picked_count}"),
                     )
 
-                # Render clickable grid into viz_placeholder
+                # Render clickable grid
                 fig = plot_grid(
                     cards,
                     agent_positions=positions,
                     title=title,
                     show_regions=aa_num_agents,
                     num_agents=aa_num_agents,
+                    human_picked=human_picked,
                 )
-                ax = fig.axes[0]
-
-                # Overlay green tint for human-picked cards
-                if human_picked:
-                    cw, ch = 0.38, 0.52
-                    for idx in human_picked:
-                        c = cards[idx]
-                        rect = mpatches.FancyBboxPatch(
-                            (c["x"] - cw / 2, c["y"] - ch / 2), cw, ch,
-                            boxstyle="round,pad=0.05",
-                            facecolor="#27ae60", edgecolor="#1e8449",
-                            linewidth=0.6, alpha=0.4, zorder=2)
-                        ax.add_patch(rect)
-
                 grid_image = _fig_to_image(fig)
+                plt.close(fig)
                 coords = streamlit_image_coordinates(
                     grid_image, key="aa_grid",
                 )
@@ -1308,8 +1291,6 @@ with tab1:
                             st.session_state["aa_human_picked"] = human_picked
                             st.session_state["aa_human_count"] = human_count
                             needs_rerun = True
-
-                plt.close(fig)
 
                 # Final stats when done
                 if aa_phase == "done":
