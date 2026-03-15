@@ -656,7 +656,7 @@ with tab1:
 
         mode = st.radio(
             "Mode",
-            ["Agent Simulation", "Human Only", "Agent Assist"],
+            ["Human Only", "Agent Assist", "Agent Simulation"],
             help=(
                 "**Agent Simulation** — agents pick up all cards automatically.\n\n"
                 "**Human Only** — you click on every card, then deliver to the verifier.\n\n"
@@ -1067,6 +1067,32 @@ with tab1:
                 delivery_progress = st.session_state["aa_delivery_progress"]
                 delivery_steps_per_agent = 8
 
+                # --- Process pending human click BEFORE agent stepping ---
+                pending = st.session_state.pop("aa_pending_click", None)
+                if pending is not None and aa_phase != "done":
+                    if pending["type"] == "card_click":
+                        idx = pending["index"]
+                        if not cards[idx]["picked_up"]:
+                            cards[idx]["picked_up"] = True
+                            cards[idx]["picked_up_by"] = "human"
+                            human_picked.add(idx)
+                            human_count += 1
+                            st.session_state["aa_cards"] = cards
+                            st.session_state["aa_human_picked"] = human_picked
+                            st.session_state["aa_human_count"] = human_count
+                    elif pending["type"] == "verifier_click" and human_count > 0:
+                        human_delivered = True
+                        aa_delivered += human_count
+                        st.session_state["aa_human_delivered"] = True
+                        st.session_state["aa_delivered"] = aa_delivered
+                        all_done = all(s == "done" for s in agent_state.values())
+                        if all_done:
+                            aa_phase = "done"
+                            st.session_state["aa_phase"] = "done"
+                            st.session_state["aa_elapsed"] = (
+                                time.time() - st.session_state["aa_start_time"]
+                            )
+
                 picked_count = sum(1 for c in cards if c["picked_up"])
                 all_agents_done = all(s == "done" for s in agent_state.values())
 
@@ -1189,29 +1215,11 @@ with tab1:
                     key="aa_grid",
                 )
 
-                # Handle human clicks
+                # Stash human click for processing at the top of the next rerun
                 needs_rerun = False
                 if result is not None and aa_phase != "done":
-                    if result["type"] == "verifier_click" and human_count > 0:
-                        st.session_state["aa_human_delivered"] = True
-                        st.session_state["aa_delivered"] = aa_delivered + human_count
-                        if all_agents_done:
-                            st.session_state["aa_phase"] = "done"
-                            st.session_state["aa_elapsed"] = (
-                                time.time() - st.session_state["aa_start_time"]
-                            )
-                        needs_rerun = True
-                    elif result["type"] == "card_click":
-                        idx = result["index"]
-                        if not cards[idx]["picked_up"]:
-                            cards[idx]["picked_up"] = True
-                            cards[idx]["picked_up_by"] = "human"
-                            human_picked.add(idx)
-                            human_count += 1
-                            st.session_state["aa_cards"] = cards
-                            st.session_state["aa_human_picked"] = human_picked
-                            st.session_state["aa_human_count"] = human_count
-                            needs_rerun = True
+                    st.session_state["aa_pending_click"] = result
+                    needs_rerun = True
 
                 # Final stats
                 if aa_phase == "done":

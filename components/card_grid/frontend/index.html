@@ -384,6 +384,13 @@ const Streamlit = {
     config = args.config || {};
     agentPositions = args.agent_positions || {};
 
+    // Detect new game: if no cards are picked on the server, reset local state
+    const anyPicked = newCards.some(function(c) { return c.picked_up; });
+    if (!anyPicked && humanPicked.size > 0) {
+      humanPicked = new Set();
+      clickSeq = 0;
+    }
+
     // Merge server state with local picks.
     // Server is authoritative for agent picks. Keep local human picks
     // that server hasn't acknowledged yet.
