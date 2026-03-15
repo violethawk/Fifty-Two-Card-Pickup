@@ -323,22 +323,27 @@ def _fig_to_image(fig: plt.Figure) -> Image.Image:
     return Image.open(buf)
 
 
-def _pixel_to_grid(px: int, py: int, fig: plt.Figure, ax) -> Tuple[float, float]:
-    """Convert pixel coordinates in saved PNG to grid data coordinates."""
-    fig_w = fig.get_figwidth() * _INTERACTIVE_DPI
-    fig_h = fig.get_figheight() * _INTERACTIVE_DPI
-    bbox = ax.get_position()
-    # Axes pixel bounds
-    ax_left = bbox.x0 * fig_w
-    ax_right = bbox.x1 * fig_w
-    ax_bottom = (1 - bbox.y1) * fig_h  # PNG y is top-down
-    ax_top = (1 - bbox.y0) * fig_h
+def _pixel_to_grid(px: int, py: int) -> Tuple[float, float]:
+    """Convert pixel coordinates in saved PNG to grid data coordinates.
+
+    Uses the deterministic layout: figsize=(3.5, 3.5),
+    subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.16),
+    xlim=(-0.3, 10.3), ylim=(-0.3, 10.3), rendered at _INTERACTIVE_DPI.
+    """
+    fig_w = 3.5 * _INTERACTIVE_DPI
+    fig_h = 3.5 * _INTERACTIVE_DPI
+    # subplots_adjust fractions
+    ax_left = 0.08 * fig_w
+    ax_right = 0.97 * fig_w
+    ax_bottom_px = (1 - 0.16) * fig_h  # PNG y is top-down
+    ax_top_px = (1 - 0.92) * fig_h
     ax_w = ax_right - ax_left
-    ax_h = ax_top - ax_bottom
-    xlim = ax.get_xlim()
-    ylim = ax.get_ylim()
-    grid_x = xlim[0] + (px - ax_left) / ax_w * (xlim[1] - xlim[0])
-    grid_y = ylim[1] - (py - ax_bottom) / ax_h * (ylim[1] - ylim[0])  # flip y
+    ax_h = ax_bottom_px - ax_top_px
+    # data limits
+    x0, x1 = -0.3, 10.3
+    y0, y1 = -0.3, 10.3
+    grid_x = x0 + (px - ax_left) / ax_w * (x1 - x0)
+    grid_y = y1 - (py - ax_top_px) / ax_h * (y1 - y0)
     return grid_x, grid_y
 
 
@@ -981,12 +986,36 @@ with tab1:
                 game_phase = st.session_state["ho_phase"]
                 picked_count = sum(1 for c in cards if c["picked_up"])
 
+                # Process any pending click BEFORE rendering so the image
+                # reflects the updated state immediately (no double-rerun).
+                pending = st.session_state.get("ho_pending_coords")
+                if pending is not None and game_phase == "picking":
+                    st.session_state["ho_pending_coords"] = None
+                    gx, gy = _pixel_to_grid(pending["x"], pending["y"])
+
+                    if picked_count == 52 and _is_verifier_click(gx, gy):
+                        st.session_state["ho_phase"] = "done"
+                        game_phase = "done"
+                        elapsed = time.time() - st.session_state["ho_start_time"]
+                        st.session_state["ho_elapsed"] = elapsed
+                    else:
+                        card_idx = _find_clicked_card(gx, gy, cards)
+                        if card_idx is not None:
+                            cards[card_idx]["picked_up"] = True
+                            cards[card_idx]["picked_up_by"] = "human"
+                            picked_set.add(card_idx)
+                            st.session_state["ho_cards"] = cards
+                            st.session_state["ho_picked"] = picked_set
+
+                    # Recount after processing
+                    picked_count = sum(1 for c in cards if c["picked_up"])
+
                 if game_phase == "picking":
-                    title = f"Click cards to pick up \u2014 {picked_count}/52"
+                    title = f"Pick up cards \u2014 {picked_count}/52"
                     if picked_count == 52:
-                        title = "All picked! Click the verifier star to deliver"
+                        title = "Click the star to deliver"
                 elif game_phase == "done":
-                    title = "Verification: PASS"
+                    title = "PASS"
                 else:
                     title = "Pick up cards!"
 
@@ -1019,7 +1048,7 @@ with tab1:
                         else "All cards picked! Click the gold star to deliver.",
                     )
 
-                # Render clickable grid into viz_placeholder
+                # Render clickable grid with already-updated card state
                 fig = plot_grid(cards, title=title, show_verifier=True,
                                 show_legend=False)
                 ax = fig.axes[0]
@@ -1040,32 +1069,14 @@ with tab1:
                 coords = streamlit_image_coordinates(
                     grid_image, key="ho_grid",
                 )
-
-                last_click = st.session_state.get("ho_last_click")
-                if (coords is not None
-                        and coords != last_click
-                        and game_phase == "picking"):
-                    st.session_state["ho_last_click"] = coords
-                    gx, gy = _pixel_to_grid(coords["x"], coords["y"], fig, ax)
-
-                    if picked_count == 52 and _is_verifier_click(gx, gy):
-                        st.session_state["ho_phase"] = "done"
-                        elapsed = time.time() - st.session_state["ho_start_time"]
-                        st.session_state["ho_elapsed"] = elapsed
-                        plt.close(fig)
-                        st.rerun()
-                    else:
-                        card_idx = _find_clicked_card(gx, gy, cards)
-                        if card_idx is not None:
-                            cards[card_idx]["picked_up"] = True
-                            cards[card_idx]["picked_up_by"] = "human"
-                            picked_set.add(card_idx)
-                            st.session_state["ho_cards"] = cards
-                            st.session_state["ho_picked"] = picked_set
-                            plt.close(fig)
-                            st.rerun()
-
                 plt.close(fig)
+
+                # Stash new click for processing on next rerun (no st.rerun()
+                # needed — the component click already triggers a rerun).
+                last_click = st.session_state.get("ho_last_click")
+                if coords is not None and coords != last_click:
+                    st.session_state["ho_last_click"] = coords
+                    st.session_state["ho_pending_coords"] = coords
 
             else:
                 # Show initial grid before game starts
@@ -1279,7 +1290,7 @@ with tab1:
                         and coords != last_click
                         and aa_phase != "done"):
                     st.session_state["aa_last_click"] = coords
-                    gx, gy = _pixel_to_grid(coords["x"], coords["y"], fig, ax)
+                    gx, gy = _pixel_to_grid(coords["x"], coords["y"])
 
                     if _is_verifier_click(gx, gy) and human_count > 0:
                         # Human delivers their cards
