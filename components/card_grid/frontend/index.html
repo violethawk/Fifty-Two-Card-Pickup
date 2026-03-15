@@ -48,6 +48,7 @@ const Streamlit = {
   let config = {};
   let humanPicked = new Set();
   let clickSeq = 0;
+  let lastGameId = null;
 
   // --- Layout constants (match plot_grid) ---
   const DATA_X0 = -0.3, DATA_X1 = 10.3;
@@ -384,9 +385,10 @@ const Streamlit = {
     config = args.config || {};
     agentPositions = args.agent_positions || {};
 
-    // Detect new game: if no cards are picked on the server, reset local state
-    const anyPicked = newCards.some(function(c) { return c.picked_up; });
-    if (!anyPicked && humanPicked.size > 0) {
+    // Detect new game via game_id and reset local state
+    const gameId = config.game_id || null;
+    if (gameId !== null && gameId !== lastGameId) {
+      lastGameId = gameId;
       humanPicked = new Set();
       clickSeq = 0;
     }

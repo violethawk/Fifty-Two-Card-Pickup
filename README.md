@@ -30,7 +30,15 @@ The pipeline has two core phases: **Fan Out** (agents scatter to pick up cards i
 
 ![4-agent simulation: Fan Out then Converge](images/simulation.gif)
 
-The Streamlit app lets you run simulations interactively with animated pickup and delivery, agent trails, a compare mode for side-by-side agent configurations, and a full benchmark suite.
+The Streamlit app offers three modes, each building on the last:
+
+| Mode | Description |
+|------|-------------|
+| **Human Only** | You click all 52 cards one by one, then deliver to the verifier. A hands-on feel for the problem space. |
+| **Agent Assist** | Agents pick up cards automatically while you click to help — race the agents and see who contributes more. Human clicks take priority over agent targeting. |
+| **Agent Simulation** | Fully automated. Configure 1, 2, or 4 agents, watch animated pickup and delivery with agent trails, compare configurations side-by-side, and run the full benchmark suite. |
+
+The interactive modes use a custom HTML5 canvas component for instant click-to-pick feedback — no server round-trip for visual updates.
 
 ```bash
 streamlit run app.py
@@ -67,9 +75,9 @@ python -m card_pickup
 
 | Agents | Avg Time (s) | Best (s) | Worst (s) | Verifier |
 |--------|--------|--------|--------|--------|
-| 1 | 0.3589 | 0.2972 | 0.4224 | 10/10 ✓ |
-| 2 | 0.2496 | 0.2226 | 0.2759 | 10/10 ✓ |
-| 4 | 0.2224 | 0.1977 | 0.2482 | 10/10 ✓ |
+| 1 | 0.3585 | 0.2971 | 0.4201 | 10/10 ✓ |
+| 2 | 0.2434 | 0.2163 | 0.2735 | 10/10 ✓ |
+| 4 | 0.2153 | 0.1935 | 0.2345 | 10/10 ✓ |
 ```
 
 More agents pick up faster, but diminishing returns appear due to delivery cost — 4 agents is only 11% faster than 2, compared to the 30% jump from 1 to 2.
@@ -119,36 +127,6 @@ Run with `python -m card_pickup --benchmark`. Generate visualizations with `pyth
 | 4 | Observability | Event logging, governance guardrails, TUI dashboard | No |
 | 5 | Extensibility | Benchmark suite, plugin architecture, tutorials | No |
 
-### Phase 1 — Deterministic Multi-Agent Orchestration
-
-Pure Python, pure LangGraph. Agents operate on shared state: Scatter places cards, Pickup agents fan out to collect them (greedy nearest-neighbor with region partitioning), then agents deliver cards to the central Verifier station. No LLMs. A scaling experiment compares 1, 2, and 4 pickup agents with simulated travel cost.
-
-**Key concepts:** Agent roles, shared state, fan-out/convergence, constraint verification, delivery cost tradeoffs.
-
-### Phase 2 — LLM-Powered Supervisor
-
-A Claude Sonnet supervisor analyzes the scatter pattern (quadrant density, spatial spread, nearest-neighbor distance) and decides how many pickup agents to deploy. Workers stay deterministic. The supervisor sits above the pipeline as an optional oversight layer.
-
-**Key concepts:** Hybrid architecture, LLM as decision-maker, strategic reasoning, human-readable rationale.
-
-### Phase 3 — LLM-Powered Pickup Agents
-
-Pickup agents get their own LLM (Claude Haiku, for cost efficiency). Each round: agents plan moves, broadcast intentions, resolve conflicts (closest agent wins), and execute. No fixed regions — agents share the whole grid.
-
-**Key concepts:** Agent autonomy, conflict detection/resolution, inter-agent communication, intelligence vs. overhead tradeoff.
-
-### Phase 4 — Observability and Governance
-
-Event logging records every action. Runtime governance checks enforce invariants after every round (card count, no double pickup, monotonic progress). Performance metrics, anomaly detection, and a live terminal TUI dashboard.
-
-**Key concepts:** Multi-agent observability, audit trails, governance guardrails, monitoring vs. governance.
-
-### Phase 5 — Extensibility and Teaching
-
-Benchmark suite with 6 scatter patterns. Plugin architecture for swapping LLM providers and pickup strategies. Tutorial series, "Add Your Own Agent" guide, and blog post.
-
-**Key concepts:** Reproducible benchmarking, extensibility, progressive teaching.
-
 ## Agents
 
 | Agent | Phase | Role |
@@ -183,23 +161,17 @@ card_pickup/            Core Python package
   __init__.py           Public API re-exports
   __main__.py           Entry point for python -m card_pickup
   _core.py              Agents, state, LangGraph pipeline
+components/
+  card_grid/            Custom Streamlit component (HTML5 canvas, no build step)
 observability.py        Event logging, governance, metrics, TUI dashboard
 benchmarks.py           Scatter patterns and benchmark runner
 plugins.py              LLM provider and pickup strategy interfaces
 visualize.py            Generate PNG visualizations of scatter patterns
-app.py                  Streamlit web app — interactive simulation
-tests/                  Unit tests (38 tests, no API key needed)
+app.py                  Streamlit web app — simulation + interactive modes
+tests/                  Unit tests (no API key needed)
 images/                 Generated scatter pattern and architecture diagrams
-prompts/                Tier 2 implementation prompts for each phase
-docs/
-  roadmap.md            Product roadmap (Phases 0-5)
-  tutorial_phase_1.md   Tutorial: deterministic agents
-  tutorial_phase_2.md   Tutorial: LLM supervisor
-  tutorial_phase_3.md   Tutorial: LLM pickup agents
-  tutorial_phase_4.md   Tutorial: observability and governance
-  tutorial_phase_5.md   Tutorial: extensibility and plugins
-  add_your_own_agent.md Step-by-step guide to adding a new agent
-  blog_post.md          "52 Card Pickup: The Multi-Agent Hello World"
+docs/                   Tutorials, roadmap, and guides
+prompts/                Implementation prompts for each phase
 pyproject.toml          Project metadata and dependencies
 requirements.txt        Pinned dependencies for pip install
 ```
@@ -208,8 +180,8 @@ requirements.txt        Pinned dependencies for pip install
 
 - **langgraph** — state graph orchestration
 - **anthropic** — Claude API for supervisor and LLM agents
-- **matplotlib** — scatter pattern visualizations
-- **streamlit** — interactive web app
+- **matplotlib** — scatter pattern visualizations and agent simulation rendering
+- **streamlit** — interactive web app (+ custom HTML5 canvas component for click-to-pick)
 - **pytest** — unit tests
 - Python 3.11+ stdlib (`curses`, `concurrent.futures`, `argparse`)
 
@@ -229,7 +201,7 @@ Contributions are welcome! This project is designed as a teaching tool, so clari
 
 1. Fork the repo and create a feature branch
 2. Make your changes — keep them focused and well-tested
-3. Run `python -m pytest tests/` to verify all 38 tests pass
+3. Run `python -m pytest tests/` to verify all tests pass
 4. Run `python -m card_pickup --benchmark` to check nothing regressed
 5. Open a PR with a clear description of what and why
 

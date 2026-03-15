@@ -921,6 +921,7 @@ with tab1:
                 st.session_state["ho_picked"] = set()
                 st.session_state["ho_phase"] = "picking"
                 st.session_state["ho_start_time"] = time.time()
+                st.session_state["ho_game_id"] = time.time()
                 st.rerun()
 
             if "ho_cards" in st.session_state:
@@ -977,6 +978,7 @@ with tab1:
                         "verifier_x": 5.0,
                         "verifier_y": 5.0,
                         "title": title,
+                        "game_id": st.session_state.get("ho_game_id", 0),
                     },
                     key="ho_grid",
                 )
@@ -1046,6 +1048,8 @@ with tab1:
                 st.session_state["aa_delivery_start"] = {}
                 st.session_state["aa_delivery_progress"] = {}
                 st.session_state["aa_num_agents"] = num_agents
+                st.session_state["aa_game_id"] = time.time()
+                st.session_state["aa_last_seq"] = -1
                 st.rerun()
 
             if "aa_cards" in st.session_state:
@@ -1067,10 +1071,15 @@ with tab1:
                 delivery_progress = st.session_state["aa_delivery_progress"]
                 delivery_steps_per_agent = 8
 
-                # --- Process pending human click BEFORE agent stepping ---
-                pending = st.session_state.pop("aa_pending_click", None)
-                if pending is not None and aa_phase != "done":
-                    if pending["type"] == "card_click":
+                # --- Process human click BEFORE agent stepping ---
+                # Read the component's last return value from session state
+                # (Streamlit stores it under the component key).
+                pending = st.session_state.get("aa_grid")
+                last_seq = st.session_state.get("aa_last_seq", -1)
+                if (pending is not None and aa_phase != "done"
+                        and pending.get("seq", -1) != last_seq):
+                    st.session_state["aa_last_seq"] = pending.get("seq", -1)
+                    if pending.get("type") == "card_click":
                         idx = pending["index"]
                         if not cards[idx]["picked_up"]:
                             cards[idx]["picked_up"] = True
@@ -1080,18 +1089,22 @@ with tab1:
                             st.session_state["aa_cards"] = cards
                             st.session_state["aa_human_picked"] = human_picked
                             st.session_state["aa_human_count"] = human_count
-                    elif pending["type"] == "verifier_click" and human_count > 0:
-                        human_delivered = True
-                        aa_delivered += human_count
-                        st.session_state["aa_human_delivered"] = True
-                        st.session_state["aa_delivered"] = aa_delivered
-                        all_done = all(s == "done" for s in agent_state.values())
-                        if all_done:
-                            aa_phase = "done"
-                            st.session_state["aa_phase"] = "done"
-                            st.session_state["aa_elapsed"] = (
-                                time.time() - st.session_state["aa_start_time"]
+                    elif pending.get("type") == "verifier_click" and human_count > 0:
+                        if not human_delivered:
+                            human_delivered = True
+                            aa_delivered += human_count
+                            st.session_state["aa_human_delivered"] = True
+                            st.session_state["aa_delivered"] = aa_delivered
+                            all_done = all(
+                                s == "done" for s in agent_state.values()
                             )
+                            if all_done:
+                                aa_phase = "done"
+                                st.session_state["aa_phase"] = "done"
+                                st.session_state["aa_elapsed"] = (
+                                    time.time()
+                                    - st.session_state["aa_start_time"]
+                                )
 
                 picked_count = sum(1 for c in cards if c["picked_up"])
                 all_agents_done = all(s == "done" for s in agent_state.values())
@@ -1159,6 +1172,16 @@ with tab1:
                 picked_count = sum(1 for c in cards if c["picked_up"])
                 all_agents_done = all(s == "done" for s in agent_state.values())
 
+                # Check if game is complete (all agents done + human delivered)
+                if (aa_phase != "done" and all_agents_done
+                        and (human_delivered or human_count == 0)):
+                    aa_phase = "done"
+                    st.session_state["aa_phase"] = "done"
+                    if "aa_elapsed" not in st.session_state:
+                        st.session_state["aa_elapsed"] = (
+                            time.time() - st.session_state["aa_start_time"]
+                        )
+
                 # Title
                 if aa_phase == "done":
                     title = "PASS"
@@ -1211,20 +1234,17 @@ with tab1:
                         "verifier_y": float(VERIFIER_Y),
                         "title": title,
                         "scoreboard": {k: v for k, v in agent_counts.items()},
+                        "game_id": st.session_state.get("aa_game_id", 0),
                     },
                     key="aa_grid",
                 )
 
-                # Stash human click for processing at the top of the next rerun
                 needs_rerun = False
-                if result is not None and aa_phase != "done":
-                    st.session_state["aa_pending_click"] = result
-                    needs_rerun = True
 
                 # Final stats
                 if aa_phase == "done":
                     elapsed = st.session_state.get("aa_elapsed", 0)
-                    total_delivered = st.session_state["aa_delivered"]
+                    total_delivered = sum(agent_counts.values()) + human_count
                     stats_md = "### Results\n\n"
                     stats_md += f"Completed in **{elapsed:.1f}s**. "
                     stats_md += f"Verification: **PASS** ({total_delivered} cards delivered)\n\n"
