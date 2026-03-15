@@ -3,4 +3,5 @@ langgraph==1.0.10
 anthropic
 matplotlib
 streamlit
+streamlit-image-coordinates
 pytest

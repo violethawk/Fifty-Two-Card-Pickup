@@ -8,6 +8,7 @@ Run with:
 from __future__ import annotations
 
 import base64
+import io
 import math
 import random
 import time
@@ -18,6 +19,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import streamlit as st
+from streamlit_image_coordinates import streamlit_image_coordinates
 
 from card_pickup import (
     AppState,
@@ -301,6 +303,62 @@ def plot_benchmark_results(results: dict) -> plt.Figure:
     ax.grid(axis="y", alpha=0.2)
     plt.tight_layout()
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Interactive click helpers (Human-only / Agent-assist modes)
+# ---------------------------------------------------------------------------
+
+def _fig_to_png_bytes(fig: plt.Figure) -> bytes:
+    """Render a matplotlib figure to PNG bytes at its native DPI."""
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=fig.dpi)
+    buf.seek(0)
+    return buf.read()
+
+
+def _pixel_to_grid(px: int, py: int, fig: plt.Figure, ax) -> Tuple[float, float]:
+    """Convert pixel coordinates in saved PNG to grid data coordinates."""
+    fig_w = fig.get_figwidth() * fig.dpi
+    fig_h = fig.get_figheight() * fig.dpi
+    bbox = ax.get_position()
+    # Axes pixel bounds
+    ax_left = bbox.x0 * fig_w
+    ax_right = bbox.x1 * fig_w
+    ax_bottom = (1 - bbox.y1) * fig_h  # PNG y is top-down
+    ax_top = (1 - bbox.y0) * fig_h
+    ax_w = ax_right - ax_left
+    ax_h = ax_top - ax_bottom
+    xlim = ax.get_xlim()
+    ylim = ax.get_ylim()
+    grid_x = xlim[0] + (px - ax_left) / ax_w * (xlim[1] - xlim[0])
+    grid_y = ylim[1] - (py - ax_bottom) / ax_h * (ylim[1] - ylim[0])  # flip y
+    return grid_x, grid_y
+
+
+def _find_clicked_card(
+    grid_x: float, grid_y: float, cards: List[Card], max_dist: float = 0.5
+) -> Optional[int]:
+    """Find the nearest unpicked card within *max_dist* of a grid coordinate.
+
+    Returns the card index or ``None``.
+    """
+    best_idx = None
+    best_d = max_dist
+    for i, c in enumerate(cards):
+        if c["picked_up"]:
+            continue
+        d = math.hypot(c["x"] - grid_x, c["y"] - grid_y)
+        if d < best_d:
+            best_d = d
+            best_idx = i
+    return best_idx
+
+
+def _is_verifier_click(grid_x: float, grid_y: float) -> bool:
+    """Return True if the click is near the verifier station."""
+    from card_pickup import VERIFIER_X, VERIFIER_Y
+    return math.hypot(grid_x - VERIFIER_X, grid_y - VERIFIER_Y) < 0.7
 
 
 def plot_compare(cards: List[Card], configs: List[int]) -> plt.Figure:
@@ -640,6 +698,18 @@ with tab1:
 
     with col_config:
         st.subheader("Configuration")
+
+        mode = st.radio(
+            "Mode",
+            ["Agent Simulation", "Human Only", "Agent Assist"],
+            help=(
+                "**Agent Simulation** — agents pick up all cards automatically.\n\n"
+                "**Human Only** — you click on every card, then deliver to the verifier.\n\n"
+                "**Agent Assist** — agents pick up cards while you help by clicking. "
+                "You deliver your cards to the verifier."
+            ),
+        )
+
         source = st.radio("Card source", ["Random scatter", "Benchmark pattern"])
 
         if source == "Benchmark pattern":
@@ -650,11 +720,14 @@ with tab1:
         else:
             pattern_name = None
 
-        default_agents = st.session_state.pop("qp_agents", 2)
-        agent_options = [1, 2, 4]
-        default_agents = default_agents if default_agents in agent_options else 2
-        num_agents = st.select_slider("Pickup agents", options=agent_options,
-                                       value=default_agents)
+        if mode != "Human Only":
+            default_agents = st.session_state.pop("qp_agents", 2)
+            agent_options = [1, 2, 4]
+            default_agents = default_agents if default_agents in agent_options else 2
+            num_agents = st.select_slider("Pickup agents", options=agent_options,
+                                           value=default_agents)
+        else:
+            num_agents = 0
 
         def _randomize_seed():
             st.session_state["seed_input"] = random.randint(0, 9999)
@@ -669,16 +742,28 @@ with tab1:
             seed = st.number_input("Random seed", min_value=0, max_value=9999,
                                    key="seed_input")
 
-        speed = st.slider("Animation speed", min_value=1, max_value=4, value=2,
-                          help="Cards picked per frame")
-        show_trails = st.checkbox("Show agent trails", value=True)
+        if mode == "Agent Simulation":
+            speed = st.slider("Animation speed", min_value=1, max_value=4, value=2,
+                              help="Cards picked per frame")
+            show_trails = st.checkbox("Show agent trails", value=True)
+        else:
+            speed = 2
+            show_trails = False
 
-        btn_col1, btn_col2 = st.columns(2)
-        with btn_col1:
-            run_btn = st.button("Run Simulation", type="primary")
-        with btn_col2:
-            replay_btn = st.button("Replay",
-                                   disabled="sim_steps" not in st.session_state)
+        if mode == "Agent Simulation":
+            btn_col1, btn_col2 = st.columns(2)
+            with btn_col1:
+                run_btn = st.button("Run Simulation", type="primary")
+            with btn_col2:
+                replay_btn = st.button("Replay",
+                                       disabled="sim_steps" not in st.session_state)
+        else:
+            run_btn = False
+            replay_btn = False
+            start_btn = st.button(
+                "Start Game" if mode == "Human Only" else "Start Agent Assist",
+                type="primary",
+            )
 
         # Shareable link
         link_params = {"seed": int(seed), "agents": num_agents}
@@ -700,7 +785,7 @@ with tab1:
                 return PATTERNS[pattern_name]()
             else:
                 random.seed(seed)
-                state = _make_initial_state(num_agents)
+                state = _make_initial_state(max(num_agents, 1))
                 state = scatter_node(state)
                 return state["cards"]
 
@@ -869,32 +954,417 @@ with tab1:
                 plt.close(fig)
                 time.sleep(0.04)
 
-        # Show initial grid
-        if not run_btn and not replay_btn:
-            display_cards = _get_cards()
-            fig = plot_grid(display_cards, title="Ready to run", show_regions=num_agents,
-                           num_agents=num_agents)
-            viz_placeholder.pyplot(fig, width="content")
-            plt.close(fig)
+        # ---------------------------------------------------------------
+        # Human-Only Mode
+        # ---------------------------------------------------------------
+        if mode == "Human Only":
+            # Initialize game state
+            if start_btn:
+                cards = _get_cards()
+                st.session_state["ho_cards"] = [dict(c) for c in cards]
+                st.session_state["ho_picked"] = set()
+                st.session_state["ho_click_seq"] = 0
+                st.session_state["ho_phase"] = "picking"
+                st.session_state["ho_start_time"] = time.time()
+                st.rerun()
 
-        # Run simulation
-        if run_btn:
-            cards = _get_cards()
+            if "ho_cards" in st.session_state:
+                cards = st.session_state["ho_cards"]
+                picked_set = st.session_state["ho_picked"]
+                game_phase = st.session_state["ho_phase"]
+                click_seq = st.session_state["ho_click_seq"]
+                picked_count = sum(1 for c in cards if c["picked_up"])
 
-            _scatter_animation(cards, num_agents)
-            dep = _compute_deployment_positions(cards, num_agents) if num_agents > 1 else None
-            steps = simulate_pickup_steps(cards, num_agents, deployment_positions=dep)
-            st.session_state["sim_steps"] = steps
-            st.session_state["sim_agents"] = num_agents
-            st.session_state["sim_show_trails"] = show_trails
-            _animate(steps, speed, num_agents, show_trails)
+                if game_phase == "picking":
+                    title = f"Click cards to pick up \u2014 {picked_count}/52"
+                    if picked_count == 52:
+                        title = "All picked! Click the verifier star to deliver"
+                elif game_phase == "done":
+                    title = "Verification: PASS"
+                else:
+                    title = "Pick up cards!"
 
-        # Replay cached simulation
-        if replay_btn and "sim_steps" in st.session_state:
-            steps = st.session_state["sim_steps"]
-            n = st.session_state.get("sim_agents", num_agents)
-            trails_on = st.session_state.get("sim_show_trails", show_trails)
-            _animate(steps, speed, n, trails_on)
+                # Render clickable grid
+                fig = plot_grid(cards, title=title, show_verifier=True)
+                ax = fig.axes[0]
+
+                # Overlay green tint for human-picked cards
+                if picked_set:
+                    cw, ch = 0.38, 0.52
+                    for idx in picked_set:
+                        c = cards[idx]
+                        rect = mpatches.FancyBboxPatch(
+                            (c["x"] - cw / 2, c["y"] - ch / 2), cw, ch,
+                            boxstyle="round,pad=0.05",
+                            facecolor="#27ae60", edgecolor="#1e8449",
+                            linewidth=0.6, alpha=0.4, zorder=2)
+                        ax.add_patch(rect)
+
+                png_bytes = _fig_to_png_bytes(fig)
+                coords = streamlit_image_coordinates(
+                    png_bytes, key=f"ho_grid_{click_seq}",
+                )
+
+                if coords is not None and game_phase == "picking":
+                    gx, gy = _pixel_to_grid(coords["x"], coords["y"], fig, ax)
+
+                    if picked_count == 52 and _is_verifier_click(gx, gy):
+                        # Deliver!
+                        st.session_state["ho_phase"] = "done"
+                        elapsed = time.time() - st.session_state["ho_start_time"]
+                        st.session_state["ho_elapsed"] = elapsed
+                        st.session_state["ho_click_seq"] = click_seq + 1
+                        plt.close(fig)
+                        st.rerun()
+                    else:
+                        card_idx = _find_clicked_card(gx, gy, cards)
+                        if card_idx is not None:
+                            cards[card_idx]["picked_up"] = True
+                            cards[card_idx]["picked_up_by"] = "human"
+                            picked_set.add(card_idx)
+                            st.session_state["ho_cards"] = cards
+                            st.session_state["ho_picked"] = picked_set
+                            st.session_state["ho_click_seq"] = click_seq + 1
+                            plt.close(fig)
+                            st.rerun()
+
+                plt.close(fig)
+
+                # Progress bar
+                frac = picked_count / 52
+                progress_placeholder.progress(
+                    max(frac, 0.01),
+                    text=f"Picked up: {picked_count}/52"
+                    if picked_count < 52 else "All cards picked! Click the gold star to deliver.",
+                )
+
+                # Scoreboard
+                scoreboard_placeholder.markdown(
+                    f"<span style='color:#27ae60;font-weight:bold'>You</span>: {picked_count}",
+                    unsafe_allow_html=True,
+                )
+
+                if game_phase == "done":
+                    elapsed = st.session_state.get("ho_elapsed", 0)
+                    # Verify
+                    all_picked = all(c["picked_up"] for c in cards)
+                    unique_keys = {(c["suit"], c["rank"]) for c in cards}
+                    passed = all_picked and len(unique_keys) == 52 and len(cards) == 52
+                    result = "PASS" if passed else "FAIL"
+
+                    progress_placeholder.progress(
+                        1.0, text=f"Verification: {result}"
+                    )
+                    stats_placeholder.markdown(
+                        f"### Results\n\n"
+                        f"You picked up all **52 cards** in **{elapsed:.1f}s**.\n\n"
+                        f"Verification: **{result}**"
+                    )
+
+            else:
+                # Show initial grid before game starts
+                display_cards = _get_cards()
+                fig = plot_grid(display_cards, title="Click 'Start Game' to begin")
+                viz_placeholder.pyplot(fig, width="content")
+                plt.close(fig)
+
+        # ---------------------------------------------------------------
+        # Agent Assist Mode
+        # ---------------------------------------------------------------
+        elif mode == "Agent Assist":
+            if start_btn:
+                cards = _get_cards()
+                cards = [dict(c) for c in cards]
+
+                # Pre-partition cards into agent regions
+                agent_ids = [f"agent_{i}" for i in range(num_agents)]
+                region_cards = {aid: [] for aid in agent_ids}
+                for idx, card in enumerate(cards):
+                    region_id = _determine_region(card, num_agents)
+                    region_id = min(region_id, num_agents - 1)
+                    region_cards[f"agent_{region_id}"].append(idx)
+
+                dep = _compute_deployment_positions(cards, num_agents) if num_agents > 1 else None
+                positions = {aid: list(dep.get(aid, [0.0, 0.0])) if dep else [0.0, 0.0]
+                             for aid in agent_ids}
+
+                st.session_state["aa_cards"] = cards
+                st.session_state["aa_agent_ids"] = agent_ids
+                st.session_state["aa_positions"] = positions
+                st.session_state["aa_remaining"] = {
+                    aid: list(idxs) for aid, idxs in region_cards.items()
+                }
+                st.session_state["aa_agent_state"] = {aid: "picking" for aid in agent_ids}
+                st.session_state["aa_agent_counts"] = {aid: 0 for aid in agent_ids}
+                st.session_state["aa_human_picked"] = set()
+                st.session_state["aa_human_count"] = 0
+                st.session_state["aa_delivered"] = 0
+                st.session_state["aa_human_delivered"] = False
+                st.session_state["aa_click_seq"] = 0
+                st.session_state["aa_phase"] = "picking"
+                st.session_state["aa_step"] = 0
+                st.session_state["aa_start_time"] = time.time()
+                st.session_state["aa_delivery_start"] = {}
+                st.session_state["aa_delivery_progress"] = {}
+                st.session_state["aa_num_agents"] = num_agents
+                st.rerun()
+
+            if "aa_cards" in st.session_state:
+                from card_pickup import VERIFIER_X, VERIFIER_Y
+
+                cards = st.session_state["aa_cards"]
+                agent_ids = st.session_state["aa_agent_ids"]
+                positions = st.session_state["aa_positions"]
+                remaining = st.session_state["aa_remaining"]
+                agent_state = st.session_state["aa_agent_state"]
+                agent_counts = st.session_state["aa_agent_counts"]
+                human_picked = st.session_state["aa_human_picked"]
+                human_count = st.session_state["aa_human_count"]
+                aa_delivered = st.session_state["aa_delivered"]
+                human_delivered = st.session_state["aa_human_delivered"]
+                click_seq = st.session_state["aa_click_seq"]
+                aa_phase = st.session_state["aa_phase"]
+                aa_num_agents = st.session_state["aa_num_agents"]
+                delivery_start = st.session_state["aa_delivery_start"]
+                delivery_progress = st.session_state["aa_delivery_progress"]
+                delivery_steps_per_agent = 8
+
+                picked_count = sum(1 for c in cards if c["picked_up"])
+                all_agents_done = all(s == "done" for s in agent_state.values())
+
+                # --- Advance agents by one round ---
+                if aa_phase == "picking" or aa_phase == "delivering":
+                    for aid in agent_ids:
+                        if agent_state[aid] == "picking":
+                            # Remove any cards the human already picked
+                            remaining[aid] = [
+                                idx for idx in remaining[aid]
+                                if not cards[idx]["picked_up"]
+                            ]
+                            rem = remaining[aid]
+                            if not rem:
+                                agent_state[aid] = "delivering"
+                                delivery_start[aid] = tuple(positions[aid])
+                                delivery_progress[aid] = 0
+                                agent_counts[aid] = sum(
+                                    1 for c in cards
+                                    if c["picked_up"] and c["picked_up_by"] == aid
+                                )
+
+                            if agent_state[aid] == "picking" and rem:
+                                px, py = positions[aid]
+                                best_idx = None
+                                best_dist = float("inf")
+                                best_ri = None
+                                for ri, cidx in enumerate(rem):
+                                    c = cards[cidx]
+                                    d = math.hypot(c["x"] - px, c["y"] - py)
+                                    if d < best_dist:
+                                        best_dist = d
+                                        best_idx = cidx
+                                        best_ri = ri
+                                if best_idx is not None:
+                                    card = cards[best_idx]
+                                    card["picked_up"] = True
+                                    card["picked_up_by"] = aid
+                                    positions[aid] = [card["x"], card["y"]]
+                                    rem.pop(best_ri)
+                                    agent_counts[aid] = agent_counts.get(aid, 0) + 1
+
+                        if agent_state[aid] == "delivering":
+                            delivery_progress[aid] = delivery_progress.get(aid, 0) + 1
+                            t = delivery_progress[aid]
+                            sx, sy = delivery_start[aid]
+                            frac = min(t / delivery_steps_per_agent, 1.0)
+                            ix = sx + (VERIFIER_X - sx) * frac
+                            iy = sy + (VERIFIER_Y - sy) * frac
+                            positions[aid] = [ix, iy]
+
+                            if t >= delivery_steps_per_agent:
+                                aa_delivered += agent_counts[aid]
+                                agent_state[aid] = "done"
+
+                    st.session_state["aa_cards"] = cards
+                    st.session_state["aa_positions"] = positions
+                    st.session_state["aa_remaining"] = remaining
+                    st.session_state["aa_agent_state"] = agent_state
+                    st.session_state["aa_agent_counts"] = agent_counts
+                    st.session_state["aa_delivered"] = aa_delivered
+                    st.session_state["aa_delivery_start"] = delivery_start
+                    st.session_state["aa_delivery_progress"] = delivery_progress
+                    st.session_state["aa_step"] = st.session_state["aa_step"] + 1
+
+                # Recompute after agent round
+                picked_count = sum(1 for c in cards if c["picked_up"])
+                all_agents_done = all(s == "done" for s in agent_state.values())
+
+                # Determine title
+                if aa_phase == "done":
+                    title = "Verification: PASS"
+                elif picked_count < 52:
+                    title = f"Agent Assist \u2014 {picked_count}/52 picked"
+                elif not human_delivered and human_count > 0:
+                    title = "Click the verifier star to deliver your cards!"
+                elif all_agents_done and (human_delivered or human_count == 0):
+                    title = "All done!"
+                else:
+                    title = f"Delivering \u2014 {aa_delivered}/{picked_count} to verifier"
+
+                # Render clickable grid
+                fig = plot_grid(
+                    cards,
+                    agent_positions=positions,
+                    title=title,
+                    show_regions=aa_num_agents,
+                    num_agents=aa_num_agents,
+                )
+                ax = fig.axes[0]
+
+                # Overlay green tint for human-picked cards
+                if human_picked:
+                    cw, ch = 0.38, 0.52
+                    for idx in human_picked:
+                        c = cards[idx]
+                        rect = mpatches.FancyBboxPatch(
+                            (c["x"] - cw / 2, c["y"] - ch / 2), cw, ch,
+                            boxstyle="round,pad=0.05",
+                            facecolor="#27ae60", edgecolor="#1e8449",
+                            linewidth=0.6, alpha=0.4, zorder=2)
+                        ax.add_patch(rect)
+
+                png_bytes = _fig_to_png_bytes(fig)
+                coords = streamlit_image_coordinates(
+                    png_bytes, key=f"aa_grid_{click_seq}",
+                )
+
+                needs_rerun = False
+                if coords is not None and aa_phase != "done":
+                    gx, gy = _pixel_to_grid(coords["x"], coords["y"], fig, ax)
+
+                    if _is_verifier_click(gx, gy) and human_count > 0:
+                        # Human delivers their cards
+                        st.session_state["aa_human_delivered"] = True
+                        st.session_state["aa_delivered"] = aa_delivered + human_count
+                        human_delivered = True
+                        st.session_state["aa_click_seq"] = click_seq + 1
+
+                        # Check if everything is done
+                        if all_agents_done:
+                            st.session_state["aa_phase"] = "done"
+                            st.session_state["aa_elapsed"] = (
+                                time.time() - st.session_state["aa_start_time"]
+                            )
+                        needs_rerun = True
+                    else:
+                        card_idx = _find_clicked_card(gx, gy, cards)
+                        if card_idx is not None:
+                            cards[card_idx]["picked_up"] = True
+                            cards[card_idx]["picked_up_by"] = "human"
+                            human_picked.add(card_idx)
+                            human_count += 1
+                            st.session_state["aa_cards"] = cards
+                            st.session_state["aa_human_picked"] = human_picked
+                            st.session_state["aa_human_count"] = human_count
+                            st.session_state["aa_click_seq"] = click_seq + 1
+                            needs_rerun = True
+
+                plt.close(fig)
+
+                # Progress
+                frac = picked_count / 52
+                if aa_phase == "done":
+                    progress_placeholder.progress(1.0, text="Verification: PASS")
+                else:
+                    progress_placeholder.progress(
+                        max(frac, 0.01),
+                        text=f"Picked: {picked_count}/52"
+                        if picked_count < 52
+                        else ("Click the gold star to deliver your cards!"
+                              if human_count > 0 and not human_delivered
+                              else f"Delivering: {aa_delivered}/{picked_count}"),
+                    )
+
+                # Scoreboard
+                score_parts = []
+                for idx_a, aid in enumerate(sorted(agent_counts.keys())):
+                    color = AGENT_COLORS[idx_a % len(AGENT_COLORS)]
+                    count = agent_counts.get(aid, 0)
+                    score_parts.append(
+                        f"<span style='color:{color};font-weight:bold'>"
+                        f"Agent {idx_a}</span>: {count}"
+                    )
+                score_parts.append(
+                    f"<span style='color:#27ae60;font-weight:bold'>You</span>: {human_count}"
+                )
+                scoreboard_placeholder.markdown(
+                    " &nbsp;&nbsp; ".join(score_parts),
+                    unsafe_allow_html=True,
+                )
+
+                # Final stats when done
+                if aa_phase == "done":
+                    elapsed = st.session_state.get("aa_elapsed", 0)
+                    total_delivered = st.session_state["aa_delivered"]
+                    stats_md = "### Results\n\n"
+                    stats_md += f"Completed in **{elapsed:.1f}s**. "
+                    stats_md += f"Verification: **PASS** ({total_delivered} cards delivered)\n\n"
+                    stats_md += "| Picker | Cards |\n|--------|-------|\n"
+                    for aid in sorted(agent_counts.keys()):
+                        stats_md += f"| {aid} | {agent_counts[aid]} |\n"
+                    stats_md += f"| **You** | **{human_count}** |\n"
+                    stats_placeholder.markdown(stats_md)
+
+                # Auto-advance agents while game is active
+                if aa_phase != "done" and not all_agents_done:
+                    needs_rerun = True
+
+                if needs_rerun:
+                    time.sleep(0.15)
+                    st.rerun()
+
+                # If agents are done but human hasn't delivered yet, just wait
+                # for clicks (no auto-rerun needed)
+
+            else:
+                # Show initial grid before game starts
+                display_cards = _get_cards()
+                fig = plot_grid(
+                    display_cards, title="Click 'Start Agent Assist' to begin",
+                    show_regions=num_agents, num_agents=num_agents,
+                )
+                viz_placeholder.pyplot(fig, width="content")
+                plt.close(fig)
+
+        # ---------------------------------------------------------------
+        # Agent Simulation Mode (original)
+        # ---------------------------------------------------------------
+        else:
+            # Show initial grid
+            if not run_btn and not replay_btn:
+                display_cards = _get_cards()
+                fig = plot_grid(display_cards, title="Ready to run", show_regions=num_agents,
+                               num_agents=num_agents)
+                viz_placeholder.pyplot(fig, width="content")
+                plt.close(fig)
+
+            # Run simulation
+            if run_btn:
+                cards = _get_cards()
+
+                _scatter_animation(cards, num_agents)
+                dep = _compute_deployment_positions(cards, num_agents) if num_agents > 1 else None
+                steps = simulate_pickup_steps(cards, num_agents, deployment_positions=dep)
+                st.session_state["sim_steps"] = steps
+                st.session_state["sim_agents"] = num_agents
+                st.session_state["sim_show_trails"] = show_trails
+                _animate(steps, speed, num_agents, show_trails)
+
+            # Replay cached simulation
+            if replay_btn and "sim_steps" in st.session_state:
+                steps = st.session_state["sim_steps"]
+                n = st.session_state.get("sim_agents", num_agents)
+                trails_on = st.session_state.get("sim_show_trails", show_trails)
+                _animate(steps, speed, n, trails_on)
 
 
 # ---- Tab 2: Compare Agents ----
